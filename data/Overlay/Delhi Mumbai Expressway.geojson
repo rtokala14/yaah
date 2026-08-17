@@ -1,8 +1,0 @@
-{
-"type": "FeatureCollection",
-"name": "output",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
-"features": [
-{ "type": "Feature", "properties": { "FeatureID": "1", "baratmlatp": "Expressways", "name": "Delhi Mumbai Expressway" }, "geometry": { "type": "LineString", "coordinates": [ [ 73.331398943927212, 22.516441600970516, 0.0 ], [ 73.338012649203606, 22.521911789162115, 0.0 ], [ 73.34360770713603, 22.526137541565056, 0.0 ], [ 73.348440311886279, 22.52985568280965, 0.0 ], [ 73.353346700949857, 22.533559908352132, 0.0 ] ] } }
-]
-}

@@ -1,75 +1,69 @@
-# Vantage — Land Suitability (Vadodara PoC)
+# blurb desktop
 
-An interactive, dark "ops-console" web app that computes a **weighted land-suitability
-score** over a 500-cell analysis grid (Vadodara region, Gujarat), renders it as a
-red→green heatmap, and — on clicking any cell — erupts a **360° radial 3D column
-chart** showing how each layer contributes to that cell's score. Layers are fully
-dynamic: add / remove / enable / re-weight, with live validation that weights total 100.
+A native desktop agentic coding harness. Rust + [GPUI](https://www.gpui.rs)
+(Zed's UI framework) + [gpui-component](https://github.com/longbridge/gpui-component).
 
-![heatmap](docs/screenshots/01-heatmap.png)
+- **Providers**: Anthropic, OpenAI, and any OpenAI-compatible endpoint —
+  each profile fully customizable: base URL, key/key-env, model, effort,
+  **arbitrary extra headers and extra request-body fields**.
+- **Native git**: status, diffstat, commit — and **worktree-isolated
+  sessions**: each agent session runs on its own branch in its own checkout,
+  in parallel, without touching yours.
+- **The harness features from `harness/DESIGN.md`**: cache-disciplined
+  prompting, prune-then-compact context management, parallel read-only
+  tools, lossless reasoning round-trips, evidence-grounded completion.
+- **Planned**: local code index (structure-first, not embeddings-first) —
+  see `INDEX-DESIGN.md`.
 
-## What's in the box
+## Layout
 
-- **`scripts/build-grid.mjs`** — dependency-free Node preprocessing. Builds a canonical
-  500-cell grid from `data/Analysis/Slope.geojson`, joins every analysis layer by
-  **nearest cell centroid** (FeatureID is not consistent across layers) and village
-  layers by **point-in-polygon** of the cell centroid (2 km nearest-polygon fallback).
-  Emits `app/public/data/{grid,scores,catalog}.json` + minified overlays, and prints a
-  join-quality report (hard-fails if any grid layer matches < 495/500).
-- **`app/`** — Vite + React 18 + TypeScript + zustand + MapLibre GL. Carto Dark Matter
-  basemap, feature-state heatmap, the fill-extrusion radial chart, glass control panel
-  (weight donut, sliders, presets, add/remove/enable, per-layer score histograms),
-  cell inspector, validation error banner with auto-balance / undo, overlay toggles,
-  and a CVD-safe blue-ramp toggle.
+| Crate | Purpose | UI dep |
+|---|---|---|
+| `crates/harness-core` | providers, tools, agent loop, context mgmt, sessions | none |
+| `crates/harness-git` | libgit2: status/diff/commit/worktrees | none |
+| `crates/harness-index` | code index trait (phase 2) | none |
+| `crates/blurb-app` | the GPUI application | gpui, gpui-component |
 
-## How to run
+## Building (first build checklist)
 
-```bash
-# 1. (Re)generate the grid data — writes app/public/data/*
-node scripts/build-grid.mjs
+Deliberately not built yet. When we do:
 
-# 2. Run the app
-cd app
-npm install
-npm run dev        # dev server  →  http://localhost:5173
-# or
-npm run build && npm run preview   # production build + static preview
+1. **Revisions are pinned in lockstep** in `desktop/Cargo.toml`: `gpui` and
+   `gpui_platform` are pinned to zed rev `cc053a4a` — the rev
+   gpui-component's own Cargo.lock pins (as of gpui-component v0.5.2).
+   Before first build, verify gpui-component main still pins that rev (check
+   its Cargo.lock) and bump all three together if not. Mismatched revs =
+   type errors between the crates. Note: crates.io hosts an older pairing
+   (gpui 0.2.2 + gpui-component 0.5.1) with a different bootstrap
+   (`Application::new()`); this code targets the git pairing
+   (`gpui_platform::application()`), do not mix them.
+2. Platform prerequisites are Zed's: recent stable Rust; on Linux, Wayland
+   or X11 dev libraries, Vulkan drivers; on macOS, Xcode CLT.
+3. `cargo check -p harness-core -p harness-git` first — these have no UI
+   deps and validate the core quickly. Their unit tests run headless:
+   `cargo test -p harness-core -p harness-git`.
+4. `cargo check -p blurb-app`, then chase GPUI API drift (the framework
+   moves fast; expect renames, not redesigns).
+5. `cargo run -p blurb-app`.
+
+## Configuration
+
+`~/.config/blurb/settings.toml` (created on first run) — provider profiles:
+
+```toml
+[[providers]]
+name = "Anthropic"
+kind = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-opus-5"
+effort = "xhigh"
+extra_headers = [["anthropic-beta", "context-management-2025-06-27"]]
+
+[[providers]]
+name = "Local vLLM"
+kind = "openai_compat"
+base_url = "http://localhost:8000/v1"
+model = "qwen3-coder"
+[providers.extra_body]
+top_k = 20
 ```
-
-The preprocessed data is committed, so step 1 is only needed if the source GeoJSON
-under `data/` changes.
-
-## Scoring model
-
-```
-suitability(cell) = Σ  (wᵢ / 100) · sᵢ(cell)     over enabled layers
-```
-
-- `sᵢ ∈ [0,1]` is each layer's precomputed suitability (higher = more suitable).
-- Enabled weights **must sum to exactly 100**; any other total is an invalid
-  configuration → the map desaturates to gray, the radial chart freezes, and a
-  persistent error banner offers **Auto-balance** (proportional rescale, rounding fixed
-  so the total is exactly 100) and **Undo**.
-- Cells with no data for a layer (e.g. a centroid outside every village polygon) are
-  **re-normalized** over the layers that do have data and flagged "partial data".
-
-## Join quality (from the pipeline report)
-
-| Layer group | Result |
-|---|---|
-| 9 grid layers (roads, industrial, slope, double-crop, settlements, railway, junctions, streams, GIDC) | **500/500** matched, 0 m drift |
-| Village NPO / WFPR | 476 / 460 covered (rest re-normalized) |
-| Village Jantri | 313 covered — only 53 villages, genuinely spans part of the area |
-
-The GIDC influence layer's source extract is all zero, so the pipeline substitutes
-deterministic synthetic demo scores (seeded per cell index); it is enabled by default
-with weight 6.
-
-## Design & accessibility
-
-Dark, glassmorphism UI. The 8-slot categorical layer palette is validated with the
-`dataviz` skill's `validate_palette.js` (passes; CVD separation sits in the 8–12 floor
-band, mitigated by the required **direct labels everywhere** — every sector, card, and
-bar names its layer, so identity never rides on color alone). The red→amber→green
-suitability ramp is paired with numeric scores in the tooltip/inspector and a
-**CVD-safe blue** toggle. `prefers-reduced-motion` is respected.

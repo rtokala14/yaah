@@ -1,8 +1,0 @@
-{
-"type": "FeatureCollection",
-"name": "output",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
-"features": [
-{ "type": "Feature", "properties": { "FeatureID": "1", "OBJECTID_1": 10, "osm_id": "227351243", "code": 6101, "fclass": "rail", "name": "Mumbai - Delhi Railway", "layer": 0.0, "bridge": "F", "tunnel": "F", "Shape_Leng": 9167.87740132, "Shape_Le_1": 10809.8095409 }, "geometry": { "type": "LineString", "coordinates": [ [ 73.353544177581654, 22.516900419170021, 0.0 ], [ 73.353166893241081, 22.516665791645412, 0.0 ] ] } }
-]
-}
