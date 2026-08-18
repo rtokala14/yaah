@@ -265,6 +265,9 @@ fn usage_line(s: &crate::workspace::SessionState) -> String {
         "{} turns · in {} ({cache_pct}% cached) · out {}",
         s.transcript.turns, prompt_total, u.output_tokens
     );
+    if let Some(turn_pct) = s.transcript.last_turn_cache_pct {
+        line.push_str(&format!(" · turn cache {turn_pct}%"));
+    }
     if s.transcript.context_budget > 0 {
         let pct = (s.transcript.context_tokens as f64 / s.transcript.context_budget as f64
             * 100.)

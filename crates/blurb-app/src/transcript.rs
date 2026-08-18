@@ -49,6 +49,12 @@ pub struct Transcript {
     pub pending_permission: Option<u64>,
     /// Plan mode: read-only until an approved plan.
     pub plan_mode: bool,
+    /// Cache-hit percent of the most recent model turn (None until a turn
+    /// reports usage).
+    pub last_turn_cache_pct: Option<u64>,
+    /// Whether any earlier turn had cache reads — used to flag unexpected
+    /// cache misses (providers without caching never trip this).
+    had_cache_hits: bool,
 }
 
 impl Transcript {
@@ -278,7 +284,9 @@ impl Transcript {
             }
             AgentEvent::Pruned { count } => {
                 self.blocks.push(Block::Notice {
-                    text: format!("pruned {count} stale tool results from context"),
+                    text: format!(
+                        "pruned {count} stale items from context (cache prefix rebuilds next turn)"
+                    ),
                 });
             }
             AgentEvent::MemoryNote { text } => {
@@ -300,10 +308,29 @@ impl Transcript {
             }
             AgentEvent::Compaction { before_tokens } => {
                 self.blocks.push(Block::Notice {
-                    text: format!("compacting context (~{before_tokens} tokens)"),
+                    text: format!("compacting context (~{before_tokens} tokens; full cache rebuild)"),
                 });
             }
-            AgentEvent::TurnEnd { stop_reason, .. } => {
+            AgentEvent::TurnEnd { stop_reason, usage } => {
+                // Per-turn prompt-cache telemetry.
+                let prompt_total = usage.input_tokens + usage.cache_read_tokens;
+                if prompt_total > 0 {
+                    let pct =
+                        (usage.cache_read_tokens as f64 / prompt_total as f64 * 100.).round() as u64;
+                    self.last_turn_cache_pct = Some(pct);
+                    if usage.cache_read_tokens > 0 {
+                        self.had_cache_hits = true;
+                    } else if self.had_cache_hits && usage.input_tokens > 5_000 {
+                        // The prefix was cached before and is not now — a
+                        // rebuild the user is paying for; say so.
+                        self.blocks.push(Block::Notice {
+                            text: format!(
+                                "prompt cache miss — {} input tokens reprocessed this turn",
+                                usage.input_tokens
+                            ),
+                        });
+                    }
+                }
                 if *stop_reason != StopReason::ToolUse {
                     self.finish_streaming();
                 }
@@ -464,6 +491,38 @@ mod tests {
             stop_reason: "cancelled".into(),
         });
         assert_eq!(t.pending_question, None);
+    }
+
+    #[test]
+    fn cache_telemetry_tracks_turns_and_flags_misses() {
+        let mut t = Transcript::default();
+        // First turn: 90% cached.
+        t.apply(&SessionEvent::Agent(E::TurnEnd {
+            stop_reason: StopReason::ToolUse,
+            usage: Usage { input_tokens: 1_000, cache_read_tokens: 9_000, ..Default::default() },
+        }));
+        assert_eq!(t.last_turn_cache_pct, Some(90));
+        let notices_before = t.blocks.len();
+
+        // A later turn with zero cache reads and a big input = flagged miss.
+        t.apply(&SessionEvent::Agent(E::TurnEnd {
+            stop_reason: StopReason::ToolUse,
+            usage: Usage { input_tokens: 12_000, cache_read_tokens: 0, ..Default::default() },
+        }));
+        assert_eq!(t.last_turn_cache_pct, Some(0));
+        assert_eq!(t.blocks.len(), notices_before + 1);
+        assert!(matches!(&t.blocks[notices_before],
+            Block::Notice { text } if text.contains("cache miss")));
+
+        // A provider with no caching at all never gets flagged.
+        let mut nocache = Transcript::default();
+        for _ in 0..3 {
+            nocache.apply(&SessionEvent::Agent(E::TurnEnd {
+                stop_reason: StopReason::ToolUse,
+                usage: Usage { input_tokens: 50_000, ..Default::default() },
+            }));
+        }
+        assert!(nocache.blocks.is_empty());
     }
 
     #[test]
