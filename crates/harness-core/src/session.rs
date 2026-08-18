@@ -14,7 +14,7 @@
 
 use crate::agent::{Agent, AgentOptions};
 use crate::config::RunProfile;
-use crate::context::{ContextOptions, SessionMemory};
+use crate::context::ContextOptions;
 use crate::prompt::build_system_prompt;
 use crate::providers;
 use crate::tools::builtin_tools;
@@ -201,7 +201,7 @@ fn session_thread(
                 messages: agent.messages().to_vec(),
                 usage,
                 turns,
-                memory: agent.memory().clone(),
+                memory: agent.memory(),
             }
             .save(path);
         }

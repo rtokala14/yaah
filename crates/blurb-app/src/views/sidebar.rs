@@ -57,8 +57,21 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
         )
         // Session list
         .child(
-            v_flex().flex_1().px_2().gap_1().overflow_hidden().children(
-                rows.into_iter().map(|row| {
+            v_flex()
+                .flex_1()
+                .px_2()
+                .gap_1()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .px_2()
+                        .pt_1()
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.muted_foreground)
+                        .child("SESSIONS"),
+                )
+                .children(rows.into_iter().map(|row| {
                     let i = row.index;
                     let is_active = active == Some(i);
                     let meta = if row.total_tokens > 0 {
@@ -85,7 +98,19 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
                                         .rounded_full()
                                         .bg(if row.running { theme.success } else { theme.muted }),
                                 )
-                                .child(div().text_sm().flex_1().truncate().child(row.title)),
+                                .child(div().text_sm().flex_1().truncate().child(row.title))
+                                .child(
+                                    // Close the session; its worktree and
+                                    // branch stay (cleaned up from the git
+                                    // panel when wanted).
+                                    Button::new(("close-session", i))
+                                        .icon(IconName::Close)
+                                        .ghost()
+                                        .xsmall()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.close_session_row(i, cx)
+                                        })),
+                                ),
                         )
                         .child(
                             div()
@@ -95,8 +120,7 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
                                 .truncate()
                                 .child(meta),
                         )
-                }),
-            ),
+                })),
         )
         // Footer: provider + settings
         .child(

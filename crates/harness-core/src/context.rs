@@ -15,24 +15,6 @@
 //!    sessions from drifting; the verbatim tail keeps in-flight work sharp.
 
 use crate::types::*;
-use serde::{Deserialize, Serialize};
-
-/// Durable session memory: survives compaction (re-injected verbatim into
-/// every compacted transcript) and app restarts (persisted in the session
-/// journal).
-///
-/// - `notes`: agent-authored via the `remember` tool — decisions,
-///   constraints, learned facts. The curated, high-value channel.
-/// - `summaries`: every compaction's handoff summary, archived in order.
-///   The historical record; not re-injected (the newest summary is already
-///   in the transcript), but inspectable and available to future features.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SessionMemory {
-    #[serde(default)]
-    pub notes: Vec<String>,
-    #[serde(default)]
-    pub summaries: Vec<String>,
-}
 
 /// Character budget for the injected digest — memory must never become the
 /// context problem it exists to solve.

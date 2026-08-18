@@ -6,7 +6,7 @@
 //! files without running anything, inject a one-time system-note nudge and
 //! continue (deterministic harness gate; no prompt scaffolding).
 
-use crate::context::{self, ContextOptions, SessionMemory};
+use crate::context::{self, ContextOptions};
 use crate::types::*;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -38,9 +38,11 @@ pub struct AgentResult {
 pub struct Agent {
     opts: AgentOptions,
     messages: Vec<AgentMessage>,
-    memory: SessionMemory,
     tools_by_name: HashMap<String, Arc<dyn Tool>>,
     tool_ctx: Arc<ToolContext>,
+    /// Notes already announced via `MemoryNote` events (memory itself lives
+    /// in `tool_ctx.memory`, the single source of truth).
+    announced_notes: usize,
     unverified_mutation: bool,
     verify_nudge_used: bool,
 }
@@ -56,9 +58,9 @@ impl Agent {
         Self {
             opts,
             messages: Vec::new(),
-            memory: SessionMemory::default(),
             tools_by_name,
             tool_ctx,
+            announced_notes: 0,
             unverified_mutation: false,
             verify_nudge_used: false,
         }
@@ -74,13 +76,15 @@ impl Agent {
         self.messages = messages;
     }
 
-    pub fn memory(&self) -> &SessionMemory {
-        &self.memory
+    pub fn memory(&self) -> SessionMemory {
+        self.tool_ctx.memory.lock().unwrap().clone()
     }
 
     /// Seed durable memory from a persisted journal (session restore).
+    /// Restored notes are not re-announced as events.
     pub fn restore_memory(&mut self, memory: SessionMemory) {
-        self.memory = memory;
+        self.announced_notes = memory.notes.len();
+        *self.tool_ctx.memory.lock().unwrap() = memory;
     }
 
     /// Swap the provider/model for subsequent turns. The transcript is kept
@@ -294,13 +298,13 @@ impl Agent {
                 i += 1;
             }
         }
-        // Move notes recorded by `remember` calls in this batch into durable
-        // session memory (they survive compaction and restarts from there).
-        let drained: Vec<String> =
-            std::mem::take(&mut *self.tool_ctx.memory_notes.lock().unwrap());
-        for note in drained {
-            emit(AgentEvent::MemoryNote { text: note.clone() });
-            self.memory.notes.push(note);
+        // Announce notes recorded by `remember` calls in this batch.
+        {
+            let memory = self.tool_ctx.memory.lock().unwrap();
+            for note in memory.notes.iter().skip(self.announced_notes) {
+                emit(AgentEvent::MemoryNote { text: note.clone() });
+            }
+            self.announced_notes = memory.notes.len();
         }
         results.into_iter().flatten().collect()
     }
@@ -338,18 +342,19 @@ impl Agent {
 
         if over(tokens, opts.compact_at) {
             emit(AgentEvent::Compaction { before_tokens: tokens });
+            let memory = self.memory();
             match context::compact(
                 self.opts.provider.as_ref(),
                 &self.opts.system,
                 &self.messages,
-                &self.memory,
+                &memory,
                 &opts,
                 cancel,
             ) {
                 Ok((replacement, summary)) => {
                     self.messages = replacement;
                     if !summary.is_empty() {
-                        self.memory.summaries.push(summary);
+                        self.tool_ctx.memory.lock().unwrap().summaries.push(summary);
                     }
                 }
                 Err(e) => emit(AgentEvent::Error(format!("compaction failed: {e}"))),

@@ -46,11 +46,12 @@ covers architecture, `INDEX-DESIGN.md` the future code index.
   context/budget estimates; the chat header renders `ctx N%`.
 - Tail cuts must never orphan tool results (`safe_tail_start`) — keep it
   that way or Anthropic requests 400.
-- Durable memory: the `remember` tool collects notes into
-  `context::SessionMemory` (persisted in the journal); compaction
-  re-injects a bounded digest of them every time and archives each
-  summary. The replacement shape is
-  [pinned task][memory digest][summary][verbatim tail].
+- Durable memory: `types::SessionMemory` lives in `ToolContext` (single
+  source of truth) — `remember` writes notes, `recall` searches notes +
+  archived summaries, the agent persists it in the journal and injects a
+  bounded digest at every compaction, archiving each summary. The
+  replacement shape is [pinned task][memory digest][summary][verbatim
+  tail].
 
 ## Persistence model
 

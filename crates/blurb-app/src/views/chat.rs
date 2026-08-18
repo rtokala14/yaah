@@ -122,13 +122,40 @@ pub fn render(
             .flex_1()
             .items_center()
             .justify_center()
-            .gap_2()
-            .child(div().text_xl().font_weight(FontWeight::BOLD).child("blurb"))
+            .gap_3()
+            .child(
+                div()
+                    .text_2xl()
+                    .font_weight(FontWeight::BOLD)
+                    .child("blurb"),
+            )
             .child(
                 div()
                     .text_sm()
                     .text_color(theme.muted_foreground)
-                    .child("An agent, your repo, its own worktree. Describe a task to begin."),
+                    .child("An agent, your repo, its own worktree."),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .px_2()
+                            .py_0p5()
+                            .rounded(theme.radius)
+                            .border_1()
+                            .border_color(theme.border)
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(view.workspace.settings.active_profile().label()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("· describe a task below to begin"),
+                    ),
             )
             .into_any_element(),
     };
@@ -178,6 +205,9 @@ fn usage_line(s: &crate::workspace::SessionState) -> String {
             .round() as u64;
         line.push_str(&format!(" · ctx {pct}%"));
     }
+    if s.transcript.memory_count > 0 {
+        line.push_str(&format!(" · ◆ {}", s.transcript.memory_count));
+    }
     line
 }
 
@@ -192,6 +222,8 @@ fn render_block(
             .py_2()
             .rounded(theme.radius)
             .bg(theme.secondary)
+            .border_l_2()
+            .border_color(theme.primary)
             .text_sm()
             .child(text)
             .into_any_element(),
@@ -224,7 +256,14 @@ fn render_block(
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(div().text_xs().font_weight(FontWeight::BOLD).child(format!("⏺ {name}")))
+                        .child(div().size(px(6.)).rounded_full().bg(if !done {
+                            theme.warning
+                        } else if is_error {
+                            theme.danger
+                        } else {
+                            theme.success
+                        }))
+                        .child(div().text_xs().font_weight(FontWeight::BOLD).child(name.clone()))
                         .child(
                             div()
                                 .text_xs()

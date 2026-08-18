@@ -62,9 +62,20 @@ context/cost with discipline instead of vibes.
   verbatim into every compaction replacement (bounded digest — oldest and
   newest notes win when over budget). Every compaction summary is
   archived in memory for the record. The system prompt teaches the model
-  to use it in long sessions. *(done — this iteration)* Still open:
-  surfacing notes/summaries in the UI (a memory panel), and a recall tool
-  over archived summaries.
+  to use it in long sessions. *(done — this iteration)*
+- [x] **Recall over archived memory.** A `recall` tool searches notes and
+  archived compaction summaries (scored keyword match; summary hits are
+  labeled with their epoch) so knowledge summarized out of the live
+  transcript is retrievable on demand instead of re-derived. Memory lives
+  in `ToolContext` as the single source of truth (`remember` writes,
+  `recall` reads, the agent persists/injects). *(done — this iteration)*
+  Still open: a memory panel in the UI to browse/edit notes.
+- [x] **UI polish, round 1.** Session rows close in-place (worktree kept),
+  SESSIONS/CONNECTION section labels, memory indicator (`◆ N`) in the
+  chat header, welcome screen with active-model chip, user messages get
+  an accent bar, tool cards get status dots, primary commit button.
+  *(done — this iteration)* A deeper visual pass (typography scale,
+  spacing rhythm, light theme) stays open under P3.
 
 ## P1 — what makes it the *best*, not just working
 

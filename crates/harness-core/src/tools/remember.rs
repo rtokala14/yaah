@@ -51,7 +51,7 @@ impl Tool for RememberTool {
                 note.len()
             ));
         }
-        ctx.memory_notes.lock().unwrap().push(note.to_string());
+        ctx.memory.lock().unwrap().notes.push(note.to_string());
         ToolOutput::ok("noted — will survive context compaction")
     }
 }
@@ -68,11 +68,11 @@ mod tests {
 
         let out = tool.execute(&json!({"note": "  tests live in crates/x  "}), &ctx);
         assert!(!out.is_error);
-        assert_eq!(ctx.memory_notes.lock().unwrap().as_slice(), ["tests live in crates/x"]);
+        assert_eq!(ctx.memory.lock().unwrap().notes.as_slice(), ["tests live in crates/x"]);
 
         assert!(tool.execute(&json!({}), &ctx).is_error);
         assert!(tool.execute(&json!({"note": "   "}), &ctx).is_error);
         assert!(tool.execute(&json!({"note": "x".repeat(600)}), &ctx).is_error);
-        assert_eq!(ctx.memory_notes.lock().unwrap().len(), 1);
+        assert_eq!(ctx.memory.lock().unwrap().notes.len(), 1);
     }
 }

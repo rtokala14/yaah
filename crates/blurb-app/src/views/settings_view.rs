@@ -631,6 +631,13 @@ fn render_editor(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElemen
                 .gap_3()
                 .max_h(px(560.))
                 .overflow_y_scroll()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.muted_foreground)
+                        .child("CONNECTION"),
+                )
                 // Kind selector
                 .child(
                     h_flex().gap_1().children(ProviderKind::ALL.into_iter().enumerate().map(

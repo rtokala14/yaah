@@ -92,15 +92,33 @@ impl ToolOutput {
     }
 }
 
+/// Durable session memory: survives compaction (re-injected verbatim into
+/// every compacted transcript) and app restarts (persisted in the session
+/// journal).
+///
+/// - `notes`: agent-authored via the `remember` tool — decisions,
+///   constraints, learned facts. The curated, high-value channel.
+/// - `summaries`: every compaction's handoff summary, archived in order.
+///   The historical record; not re-injected (the newest summary is already
+///   in the transcript), but searchable via the `recall` tool.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionMemory {
+    #[serde(default)]
+    pub notes: Vec<String>,
+    #[serde(default)]
+    pub summaries: Vec<String>,
+}
+
 /// Shared per-session tool state. `read_files` maps canonical path -> mtime
-/// (as nanos) at last read, for edit staleness checks. `memory_notes`
-/// collects notes recorded via the `remember` tool during a batch; the
-/// agent drains them into its durable session memory.
+/// (as nanos) at last read, for edit staleness checks. `memory` is the
+/// single source of truth for durable session memory — `remember` writes
+/// it, `recall` searches it, the agent persists it and injects digests at
+/// compaction.
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancel: CancelToken,
     pub read_files: Mutex<HashMap<PathBuf, u128>>,
-    pub memory_notes: Mutex<Vec<String>>,
+    pub memory: Mutex<SessionMemory>,
 }
 
 impl ToolContext {
@@ -109,7 +127,7 @@ impl ToolContext {
             cwd,
             cancel,
             read_files: Mutex::new(HashMap::new()),
-            memory_notes: Mutex::new(Vec::new()),
+            memory: Mutex::new(SessionMemory::default()),
         }
     }
 }

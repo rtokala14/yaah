@@ -35,6 +35,8 @@ pub struct Transcript {
     /// session's context budget — for the header's context meter.
     pub context_tokens: usize,
     pub context_budget: usize,
+    /// Durable memory notes recorded so far (header indicator).
+    pub memory_count: usize,
 }
 
 impl Transcript {
@@ -202,7 +204,8 @@ impl Transcript {
                 });
             }
             AgentEvent::MemoryNote { text } => {
-                self.blocks.push(Block::Notice { text: format!("remembered: {text}") });
+                self.memory_count += 1;
+                self.blocks.push(Block::Notice { text: format!("◆ remembered: {text}") });
             }
             AgentEvent::Compaction { before_tokens } => {
                 self.blocks.push(Block::Notice {

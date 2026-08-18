@@ -82,7 +82,11 @@ impl Workspace {
                 .unwrap_or_else(|| self.settings.active_profile());
             let journal_path = self.store.journal_path(meta.id);
             let transcript = SessionJournal::load(&journal_path)
-                .map(|j| Transcript::from_messages(&j.messages, j.usage, j.turns))
+                .map(|j| {
+                    let mut t = Transcript::from_messages(&j.messages, j.usage, j.turns);
+                    t.memory_count = j.memory.notes.len();
+                    t
+                })
                 .unwrap_or_default();
             let handle = SessionHandle::spawn(
                 meta.id,

@@ -203,6 +203,13 @@ impl RootView {
         }
     }
 
+    /// Close a session from the sidebar. Its worktree and branch are kept —
+    /// worktree cleanup lives in the git panel.
+    pub fn close_session_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.workspace.close_session(index, false);
+        cx.notify();
+    }
+
     pub fn interrupt_active(&mut self, cx: &mut Context<Self>) {
         if let Some(active) = self.workspace.active_session {
             self.workspace.interrupt(active);

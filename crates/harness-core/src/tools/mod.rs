@@ -15,6 +15,7 @@ mod fsutil;
 mod glob_tool;
 mod grep;
 mod read;
+mod recall;
 mod remember;
 mod write;
 
@@ -23,6 +24,7 @@ pub use edit::EditTool;
 pub use glob_tool::GlobTool;
 pub use grep::GrepTool;
 pub use read::ReadTool;
+pub use recall::RecallTool;
 pub use remember::RememberTool;
 pub use write::WriteTool;
 
@@ -40,6 +42,7 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(GrepTool::new()),
         Arc::new(GlobTool::new()),
         Arc::new(RememberTool::new()),
+        Arc::new(RecallTool::new()),
     ]
 }
 

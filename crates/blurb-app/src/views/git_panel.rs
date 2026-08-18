@@ -313,6 +313,7 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
                 .child(
                     Button::new("commit")
                         .label("Commit")
+                        .primary()
                         .small()
                         .on_click(cx.listener(|this, _, _, cx| this.commit_all(cx))),
                 ),
