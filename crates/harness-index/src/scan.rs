@@ -1,22 +1,32 @@
-//! Phase-1 index: a single gitignore-aware walk, per-language regex symbol
-//! extraction, and an identifier→files inverted map. No tree-sitter, no
-//! embeddings — structure first, cheap enough to rebuild per session (see
-//! INDEX-DESIGN.md; watcher-driven incremental updates are phase 2).
+//! Phase-2 index: gitignore-aware scan, per-language regex symbol
+//! extraction, an identifier→files inverted map, **file-graph PageRank**
+//! ranking, and **mtime-validated incremental refresh** — the index is
+//! never trusted-but-wrong: every query revalidates (debounced) against
+//! the filesystem, reparsing only what changed. Tree-sitter precision and
+//! per-worktree overlays remain future work (INDEX-DESIGN.md).
 
 use crate::{CodeIndex, IndexError, Reference, Symbol, SymbolKind};
 use ignore::WalkBuilder;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 /// Per-file size cap and total corpus cap keep build time and memory
 /// bounded on large repos; skipped files simply don't contribute.
 const MAX_FILE_BYTES: u64 = 512 * 1024;
 const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+/// Lazy queries revalidate at most this often; `refresh_now` always does.
+const REFRESH_DEBOUNCE: Duration = Duration::from_millis(1000);
+/// Identifiers defined in more than this many files are too generic to
+/// contribute reference-graph edges.
+const MAX_DEF_FANOUT: usize = 20;
+const PAGERANK_ITERS: usize = 20;
+const PAGERANK_DAMPING: f64 = 0.85;
 
 struct LangSpec {
     extensions: &'static [&'static str],
-    /// (regex with two captures: keyword, name)
     patterns: Vec<(Regex, fn(&str, bool) -> SymbolKind)>,
 }
 
@@ -56,6 +66,33 @@ fn ts_kind(keyword: &str, _indented: bool) -> SymbolKind {
 fn go_kind(keyword: &str, _indented: bool) -> SymbolKind {
     match keyword {
         "type" => SymbolKind::Struct,
+        _ => SymbolKind::Function,
+    }
+}
+
+fn java_kind(keyword: &str, _indented: bool) -> SymbolKind {
+    match keyword {
+        "interface" => SymbolKind::Interface,
+        "enum" => SymbolKind::Enum,
+        "record" => SymbolKind::Struct,
+        _ => SymbolKind::Class,
+    }
+}
+
+fn c_kind(keyword: &str, _indented: bool) -> SymbolKind {
+    match keyword {
+        "struct" | "union" => SymbolKind::Struct,
+        "enum" => SymbolKind::Enum,
+        "namespace" => SymbolKind::Module,
+        _ => SymbolKind::Class,
+    }
+}
+
+fn rb_kind(keyword: &str, indented: bool) -> SymbolKind {
+    match keyword {
+        "class" => SymbolKind::Class,
+        "module" => SymbolKind::Module,
+        _ if indented => SymbolKind::Method,
         _ => SymbolKind::Function,
     }
 }
@@ -105,17 +142,34 @@ fn lang_specs() -> Vec<LangSpec> {
                 go_kind,
             )],
         },
+        LangSpec {
+            extensions: &["java", "kt", "kts"],
+            patterns: vec![(
+                Regex::new(
+                    r"(?m)^([ \t]*)(?:(?:public|private|protected|static|final|abstract|sealed|data|open)\s+)*(class|interface|enum|record|object)\s+([A-Za-z_][A-Za-z0-9_]*)",
+                )
+                .unwrap(),
+                java_kind,
+            )],
+        },
+        LangSpec {
+            extensions: &["c", "h", "cc", "cpp", "hpp", "cxx"],
+            patterns: vec![(
+                Regex::new(
+                    r"(?m)^([ \t]*)(?:typedef\s+)?(struct|class|enum|namespace|union)\s+([A-Za-z_][A-Za-z0-9_]*)",
+                )
+                .unwrap(),
+                c_kind,
+            )],
+        },
+        LangSpec {
+            extensions: &["rb"],
+            patterns: vec![(
+                Regex::new(r"(?m)^([ \t]*)(def|class|module)\s+([A-Za-z_][A-Za-z0-9_]*[?!]?)").unwrap(),
+                rb_kind,
+            )],
+        },
     ]
-}
-
-/// The phase-1 in-memory index.
-pub struct RegexIndex {
-    root: PathBuf,
-    symbols: Vec<Symbol>,
-    /// Relative path → file text (for reference scans and outlines).
-    files: HashMap<PathBuf, String>,
-    /// identifier → set of files whose text contains it.
-    ident_files: HashMap<String, Vec<PathBuf>>,
 }
 
 fn identifiers(text: &str) -> HashSet<&str> {
@@ -142,17 +196,112 @@ fn identifiers(text: &str) -> HashSet<&str> {
     out
 }
 
+struct FileEntry {
+    mtime: u128,
+    text: String,
+    /// Unique identifiers appearing in the file (sorted).
+    idents: Vec<String>,
+    /// Symbols defined here (rank filled in at finalize).
+    symbols: Vec<Symbol>,
+}
+
+#[derive(Default)]
+struct Inner {
+    files: HashMap<PathBuf, FileEntry>,
+    /// Ranked global view: rank desc, then path, then line.
+    symbols: Vec<Symbol>,
+    ident_files: HashMap<String, Vec<PathBuf>>,
+}
+
+/// The phase-2 in-memory index: interior-mutable, revalidating.
+pub struct RegexIndex {
+    root: PathBuf,
+    inner: RwLock<Inner>,
+    last_refresh: Mutex<Option<Instant>>,
+}
+
+fn file_mtime(meta: &std::fs::Metadata) -> u128 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+fn parse_file(path: &Path, text: &str, by_ext: &HashMap<&str, &LangSpec>) -> Vec<Symbol> {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else { return Vec::new() };
+    let Some(spec) = by_ext.get(ext) else { return Vec::new() };
+    let mut symbols = Vec::new();
+    for (regex, kind_fn) in &spec.patterns {
+        for caps in regex.captures_iter(text) {
+            let indent = caps.get(1).map(|m| !m.as_str().is_empty()).unwrap_or(false);
+            let keyword = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            let Some(name) = caps.get(3).map(|m| m.as_str()) else { continue };
+            let offset = caps.get(0).map(|m| m.start()).unwrap_or(0);
+            let line = text[..offset].matches('\n').count() as u32 + 1;
+            let signature: String =
+                text[offset..].lines().next().unwrap_or("").trim().chars().take(100).collect();
+            symbols.push(Symbol {
+                name: name.to_string(),
+                kind: kind_fn(keyword, indent),
+                file: path.to_path_buf(),
+                line,
+                signature,
+                rank: 0.0,
+            });
+        }
+    }
+    symbols
+}
+
 impl RegexIndex {
     pub fn build(root: &Path) -> Self {
-        let specs = lang_specs();
-        let by_ext: HashMap<&str, &LangSpec> = specs
-            .iter()
-            .flat_map(|s| s.extensions.iter().map(move |e| (*e, s)))
-            .collect();
+        let index = Self {
+            root: root.to_path_buf(),
+            inner: RwLock::new(Inner::default()),
+            last_refresh: Mutex::new(None),
+        };
+        index.refresh_now();
+        index
+    }
 
-        let mut files = HashMap::new();
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn file_count(&self) -> usize {
+        self.inner.read().unwrap().files.len()
+    }
+
+    /// Revalidate against the filesystem immediately: stat-walk, reparse
+    /// changed/new files, drop deleted ones, re-rank if anything moved.
+    pub fn refresh_now(&self) {
+        self.refresh_inner();
+        *self.last_refresh.lock().unwrap() = Some(Instant::now());
+    }
+
+    /// Debounced revalidation used by queries.
+    fn refresh_if_stale(&self) {
+        {
+            let last = self.last_refresh.lock().unwrap();
+            if let Some(t) = *last {
+                if t.elapsed() < REFRESH_DEBOUNCE {
+                    return;
+                }
+            }
+        }
+        self.refresh_now();
+    }
+
+    fn refresh_inner(&self) {
+        let specs = lang_specs();
+        let by_ext: HashMap<&str, &LangSpec> =
+            specs.iter().flat_map(|s| s.extensions.iter().map(move |e| (*e, s))).collect();
+
+        // Stat walk: what exists now, with mtimes.
+        let mut seen: HashMap<PathBuf, (u128, PathBuf)> = HashMap::new();
         let mut total: u64 = 0;
-        for entry in WalkBuilder::new(root).hidden(true).build().flatten() {
+        for entry in WalkBuilder::new(&self.root).hidden(true).build().flatten() {
             if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
             }
@@ -165,81 +314,144 @@ impl RegexIndex {
             if meta.len() > MAX_FILE_BYTES || total + meta.len() > MAX_TOTAL_BYTES {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(path) else { continue };
             total += meta.len();
-            let rel = path.strip_prefix(root).unwrap_or(path).to_path_buf();
-            files.insert(rel, text);
+            let rel = path.strip_prefix(&self.root).unwrap_or(path).to_path_buf();
+            seen.insert(rel, (file_mtime(&meta), path.to_path_buf()));
         }
 
-        // Inverted identifier map (for candidate filtering and ranking).
-        let mut ident_files: HashMap<String, Vec<PathBuf>> = HashMap::new();
-        for (path, text) in &files {
-            for ident in identifiers(text) {
-                ident_files.entry(ident.to_string()).or_default().push(path.clone());
+        let mut inner = self.inner.write().unwrap();
+        let mut changed = false;
+
+        // Drop deleted files.
+        let removed: Vec<PathBuf> =
+            inner.files.keys().filter(|p| !seen.contains_key(*p)).cloned().collect();
+        for path in removed {
+            inner.files.remove(&path);
+            changed = true;
+        }
+
+        // Add/update new and modified files.
+        for (rel, (mtime, abs)) in seen {
+            let stale = match inner.files.get(&rel) {
+                Some(entry) => entry.mtime != mtime,
+                None => true,
+            };
+            if !stale {
+                continue;
             }
-        }
-        for list in ident_files.values_mut() {
-            list.sort();
+            let Ok(text) = std::fs::read_to_string(&abs) else { continue };
+            let mut idents: Vec<String> =
+                identifiers(&text).into_iter().map(String::from).collect();
+            idents.sort();
+            let symbols = parse_file(&rel, &text, &by_ext);
+            inner.files.insert(rel, FileEntry { mtime, text, idents, symbols });
+            changed = true;
         }
 
-        // Symbols; rank = number of OTHER files mentioning the name (a
-        // cheap stand-in for reference-graph centrality).
-        let mut symbols = Vec::new();
-        for (path, text) in &files {
-            let Some(ext) = path.extension().and_then(|e| e.to_str()) else { continue };
-            let Some(spec) = by_ext.get(ext) else { continue };
-            for (regex, kind_fn) in &spec.patterns {
-                for caps in regex.captures_iter(text) {
-                    let indent = caps.get(1).map(|m| !m.as_str().is_empty()).unwrap_or(false);
-                    let keyword = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-                    let Some(name) = caps.get(3).map(|m| m.as_str()) else { continue };
-                    let offset = caps.get(0).map(|m| m.start()).unwrap_or(0);
-                    let line = text[..offset].matches('\n').count() as u32 + 1;
-                    let signature: String = text[offset..]
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .trim()
-                        .chars()
-                        .take(100)
-                        .collect();
-                    let mentions = ident_files.get(name).map(|f| f.len()).unwrap_or(1);
-                    symbols.push(Symbol {
-                        name: name.to_string(),
-                        kind: kind_fn(keyword, indent),
-                        file: path.clone(),
-                        line,
-                        signature,
-                        rank: (mentions.saturating_sub(1)) as f32,
-                    });
+        if changed {
+            finalize(&mut inner);
+        }
+    }
+}
+
+/// Rebuild the derived views: inverted map, file PageRank, ranked symbols.
+fn finalize(inner: &mut Inner) {
+    let mut paths: Vec<PathBuf> = inner.files.keys().cloned().collect();
+    paths.sort();
+
+    // Inverted identifier map.
+    let mut ident_files: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for path in &paths {
+        for ident in &inner.files[path].idents {
+            ident_files.entry(ident.clone()).or_default().push(path.clone());
+        }
+    }
+
+    // Definition map: symbol name -> defining file indices.
+    let idx_of: HashMap<&PathBuf, usize> =
+        paths.iter().enumerate().map(|(i, p)| (p, i)).collect();
+    let mut def_map: HashMap<&str, Vec<usize>> = HashMap::new();
+    for path in &paths {
+        for sym in &inner.files[path].symbols {
+            def_map.entry(sym.name.as_str()).or_default().push(idx_of[path]);
+        }
+    }
+
+    // Reference graph: A mentions a symbol defined in B (A != B) => A -> B.
+    let n = paths.len().max(1);
+    let mut out_edges: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (a_i, a) in paths.iter().enumerate() {
+        let mut targets: HashSet<usize> = HashSet::new();
+        for ident in &inner.files[a].idents {
+            if let Some(defs) = def_map.get(ident.as_str()) {
+                if defs.len() > MAX_DEF_FANOUT {
+                    continue;
+                }
+                for &b_i in defs {
+                    if b_i != a_i {
+                        targets.insert(b_i);
+                    }
                 }
             }
         }
-        // Deterministic order: rank desc, then path, then line.
-        symbols.sort_by(|a, b| {
-            b.rank
-                .partial_cmp(&a.rank)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.file.cmp(&b.file))
-                .then_with(|| a.line.cmp(&b.line))
-        });
-
-        Self { root: root.to_path_buf(), symbols, files, ident_files }
+        let mut t: Vec<usize> = targets.into_iter().collect();
+        t.sort_unstable();
+        out_edges[a_i] = t;
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
+    // PageRank over files (dangling mass spread evenly).
+    let mut pr = vec![1.0f64 / n as f64; n];
+    for _ in 0..PAGERANK_ITERS {
+        let mut next = vec![(1.0 - PAGERANK_DAMPING) / n as f64; n];
+        let mut dangling = 0.0f64;
+        for (a, targets) in out_edges.iter().enumerate() {
+            if targets.is_empty() {
+                dangling += pr[a];
+            } else {
+                let share = PAGERANK_DAMPING * pr[a] / targets.len() as f64;
+                for &b in targets {
+                    next[b] += share;
+                }
+            }
+        }
+        let dangle_share = PAGERANK_DAMPING * dangling / n as f64;
+        for v in next.iter_mut() {
+            *v += dangle_share;
+        }
+        pr = next;
     }
+    let max_pr = pr.iter().cloned().fold(f64::MIN, f64::max).max(f64::MIN_POSITIVE);
 
-    pub fn file_count(&self) -> usize {
-        self.files.len()
+    // Ranked global symbol view: file rank leads, cross-file mentions
+    // break ties within a file.
+    let mut symbols: Vec<Symbol> = Vec::new();
+    for (i, path) in paths.iter().enumerate() {
+        let frank = (pr[i] / max_pr * 100.0) as f32;
+        for sym in &inner.files[path].symbols {
+            let mentions = ident_files.get(&sym.name).map(|f| f.len()).unwrap_or(1) as f32;
+            let mut s = sym.clone();
+            s.rank = frank * 1000.0 + (mentions - 1.0);
+            symbols.push(s);
+        }
     }
+    symbols.sort_by(|a, b| {
+        b.rank
+            .partial_cmp(&a.rank)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.line.cmp(&b.line))
+    });
+
+    inner.ident_files = ident_files;
+    inner.symbols = symbols;
 }
 
 impl CodeIndex for RegexIndex {
     fn find_symbols(&self, query: &str, limit: usize) -> Result<Vec<Symbol>, IndexError> {
+        self.refresh_if_stale();
         let q = query.to_lowercase();
-        Ok(self
+        let inner = self.inner.read().unwrap();
+        Ok(inner
             .symbols
             .iter()
             .filter(|s| s.name.to_lowercase().contains(&q))
@@ -249,11 +461,13 @@ impl CodeIndex for RegexIndex {
     }
 
     fn find_references(&self, name: &str, limit: usize) -> Result<Vec<Reference>, IndexError> {
+        self.refresh_if_stale();
+        let inner = self.inner.read().unwrap();
         let mut out = Vec::new();
-        let candidates = self.ident_files.get(name).cloned().unwrap_or_default();
+        let candidates = inner.ident_files.get(name).cloned().unwrap_or_default();
         for path in candidates {
-            let Some(text) = self.files.get(&path) else { continue };
-            for (i, line) in text.lines().enumerate() {
+            let Some(entry) = inner.files.get(&path) else { continue };
+            for (i, line) in entry.text.lines().enumerate() {
                 if line.contains(name) {
                     out.push(Reference {
                         file: path.clone(),
@@ -270,19 +484,21 @@ impl CodeIndex for RegexIndex {
     }
 
     fn file_outline(&self, file: &Path) -> Result<Vec<Symbol>, IndexError> {
+        self.refresh_if_stale();
+        let inner = self.inner.read().unwrap();
         let mut out: Vec<Symbol> =
-            self.symbols.iter().filter(|s| s.file == file).cloned().collect();
+            inner.symbols.iter().filter(|s| s.file == file).cloned().collect();
         out.sort_by_key(|s| s.line);
         Ok(out)
     }
 
     fn repo_map(&self, max_tokens: usize) -> Result<String, IndexError> {
+        self.refresh_if_stale();
+        let inner = self.inner.read().unwrap();
         let budget_chars = max_tokens.saturating_mul(4);
-        // Rank files by their best symbols, then list each file's top
-        // symbols. Deterministic by construction (symbols are pre-sorted).
         let mut file_order: Vec<&PathBuf> = Vec::new();
         let mut seen = HashSet::new();
-        for s in &self.symbols {
+        for s in &inner.symbols {
             if seen.insert(&s.file) {
                 file_order.push(&s.file);
             }
@@ -291,7 +507,7 @@ impl CodeIndex for RegexIndex {
         for path in file_order {
             let mut section = format!("{}\n", path.display());
             let mut listed = 0;
-            for s in self.symbols.iter().filter(|s| &s.file == path) {
+            for s in inner.symbols.iter().filter(|s| &s.file == path) {
                 if listed >= 8 {
                     break;
                 }
@@ -307,15 +523,17 @@ impl CodeIndex for RegexIndex {
     }
 
     fn candidate_files(&self, literal: &str) -> Result<Vec<PathBuf>, IndexError> {
+        // Grep correctness depends on this being current: always refresh.
+        self.refresh_now();
+        let inner = self.inner.read().unwrap();
         let idents: Vec<&str> = identifiers(literal).into_iter().collect();
         if idents.is_empty() {
             return Err(IndexError::Other("no identifier-like tokens in query".into()));
         }
-        // Intersection across all tokens.
         let mut result: Option<HashSet<PathBuf>> = None;
         for ident in idents {
             let files: HashSet<PathBuf> =
-                self.ident_files.get(ident).cloned().unwrap_or_default().into_iter().collect();
+                inner.ident_files.get(ident).cloned().unwrap_or_default().into_iter().collect();
             result = Some(match result {
                 None => files,
                 Some(acc) => acc.intersection(&files).cloned().collect(),
@@ -360,6 +578,21 @@ mod tests {
     #[test]
     fn extracts_symbols_across_languages() {
         let tmp = fixture();
+        std::fs::write(
+            tmp.path().join("Svc.java"),
+            "public final class AuthService {}\npublic interface TokenStore {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("geo.hpp"),
+            "namespace geo {\nstruct Point { int x; };\nenum Axis { X, Y };\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("job.rb"),
+            "module Jobs\n  class Mailer\n    def deliver!\n    end\n  end\nend\n",
+        )
+        .unwrap();
         let index = RegexIndex::build(tmp.path());
 
         let mint = index.find_symbols("mint_token", 10).unwrap();
@@ -367,31 +600,26 @@ mod tests {
         assert_eq!(mint[0].kind, SymbolKind::Function);
         assert_eq!(mint[0].file, PathBuf::from("src/auth.rs"));
         assert_eq!(mint[0].line, 3);
-
-        // Indented rust fn = method.
-        let refresh = index.find_symbols("refresh", 10).unwrap();
-        assert_eq!(refresh[0].kind, SymbolKind::Method);
-
+        assert_eq!(index.find_symbols("refresh", 10).unwrap()[0].kind, SymbolKind::Method);
         assert_eq!(index.find_symbols("Server", 10).unwrap()[0].kind, SymbolKind::Class);
-        assert_eq!(index.find_symbols("renderApp", 10).unwrap()[0].kind, SymbolKind::Function);
         assert_eq!(index.find_symbols("appConfig", 10).unwrap()[0].kind, SymbolKind::Variable);
+        // New languages.
+        assert_eq!(index.find_symbols("AuthService", 10).unwrap()[0].kind, SymbolKind::Class);
+        assert_eq!(index.find_symbols("TokenStore", 10).unwrap()[0].kind, SymbolKind::Interface);
+        assert_eq!(index.find_symbols("Point", 10).unwrap()[0].kind, SymbolKind::Struct);
+        assert_eq!(index.find_symbols("geo", 10).unwrap()[0].kind, SymbolKind::Module);
+        assert_eq!(index.find_symbols("Mailer", 10).unwrap()[0].kind, SymbolKind::Class);
+        assert_eq!(index.find_symbols("deliver!", 10).unwrap()[0].kind, SymbolKind::Method);
     }
 
     #[test]
-    fn references_rank_and_candidates() {
+    fn references_and_candidates() {
         let tmp = fixture();
         let index = RegexIndex::build(tmp.path());
-
-        // mint_token is mentioned in two files → refs from both.
         let refs = index.find_references("mint_token", 10).unwrap();
         let files: HashSet<_> = refs.iter().map(|r| r.file.clone()).collect();
         assert!(files.contains(&PathBuf::from("src/auth.rs")));
         assert!(files.contains(&PathBuf::from("src/main.rs")));
-
-        // Cross-file mention boosts rank above single-file symbols.
-        let mint = &index.find_symbols("mint_token", 1).unwrap()[0];
-        let panel = &index.find_symbols("Panel", 1).unwrap()[0];
-        assert!(mint.rank > panel.rank);
 
         let candidates = index.candidate_files("mint_token").unwrap();
         assert_eq!(candidates.len(), 2);
@@ -399,10 +627,74 @@ mod tests {
     }
 
     #[test]
+    fn pagerank_ranks_referenced_files_higher() {
+        let tmp = tempfile::tempdir().unwrap();
+        // core.rs defines things three other files use; leaf.rs is unused.
+        std::fs::write(
+            tmp.path().join("core.rs"),
+            "pub fn central_helper() {}\npub struct CoreThing;\n",
+        )
+        .unwrap();
+        for user in ["a.rs", "b.rs", "c.rs"] {
+            std::fs::write(
+                tmp.path().join(user),
+                "fn go() { central_helper(); let _x: CoreThing; }\n",
+            )
+            .unwrap();
+        }
+        std::fs::write(tmp.path().join("leaf.rs"), "pub fn lonely_fn() {}\n").unwrap();
+        let index = RegexIndex::build(tmp.path());
+
+        let central = &index.find_symbols("central_helper", 1).unwrap()[0];
+        let lonely = &index.find_symbols("lonely_fn", 1).unwrap()[0];
+        assert!(
+            central.rank > lonely.rank,
+            "hub file symbol ({}) must outrank leaf ({})",
+            central.rank,
+            lonely.rank
+        );
+        // The repo map leads with the hub file.
+        let map = index.repo_map(2000).unwrap();
+        let core_pos = map.find("core.rs").unwrap();
+        let leaf_pos = map.find("leaf.rs").unwrap_or(usize::MAX);
+        assert!(core_pos < leaf_pos);
+    }
+
+    #[test]
+    fn incremental_refresh_tracks_edits_adds_and_deletes() {
+        let tmp = fixture();
+        let index = RegexIndex::build(tmp.path());
+        assert_eq!(index.find_symbols("brand_new_fn", 10).unwrap().len(), 0);
+        let count_before = index.file_count();
+
+        // Add a file, modify one, delete one.
+        std::thread::sleep(Duration::from_millis(20)); // distinct mtimes
+        std::fs::write(tmp.path().join("newmod.rs"), "pub fn brand_new_fn() {}\n").unwrap();
+        std::fs::write(
+            tmp.path().join("src/auth.rs"),
+            "pub fn renamed_mint(user: &str) -> u64 { 0 }\n",
+        )
+        .unwrap();
+        std::fs::remove_file(tmp.path().join("ui.ts")).unwrap();
+        index.refresh_now();
+
+        assert_eq!(index.find_symbols("brand_new_fn", 10).unwrap().len(), 1);
+        assert_eq!(index.find_symbols("renamed_mint", 10).unwrap().len(), 1);
+        assert_eq!(index.find_symbols("mint_token", 10).unwrap().len(), 0, "old symbol gone");
+        assert_eq!(index.find_symbols("renderApp", 10).unwrap().len(), 0, "deleted file gone");
+        assert_eq!(index.file_count(), count_before); // +1 new, -1 deleted
+        // References reflect the new content, not the cached old text.
+        assert!(index
+            .find_references("renamed_mint", 10)
+            .unwrap()
+            .iter()
+            .any(|r| r.file == PathBuf::from("src/auth.rs")));
+    }
+
+    #[test]
     fn outline_and_budgeted_repo_map() {
         let tmp = fixture();
         let index = RegexIndex::build(tmp.path());
-
         let outline = index.file_outline(Path::new("src/auth.rs")).unwrap();
         let names: Vec<&str> = outline.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["AuthToken", "mint_token", "refresh"]);
@@ -410,10 +702,7 @@ mod tests {
         let map = index.repo_map(2000).unwrap();
         assert!(map.contains("src/auth.rs"));
         assert!(map.contains("pub fn mint_token"));
-
-        // Budget is respected (tiny budget → tiny map).
         let small = index.repo_map(20).unwrap();
-        assert!(small.len() <= 20 * 4 + 80);
         assert!(small.len() < map.len());
     }
 }

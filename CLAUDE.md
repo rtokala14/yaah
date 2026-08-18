@@ -82,9 +82,14 @@ covers architecture, `INDEX-DESIGN.md` the future code index.
   fresh Agent with `nested_toolset` (read-only, minus subagent/todo/
   remember). read_only=true ⇒ parallel fan-out for free. Nested contexts
   get no runner, so recursion fails closed.
-- **Index**: `RegexIndex::build` runs once per session thread;
-  `symbols`/`refs`/`outline` tools always join; the 2k-token repo map is
-  appended to the system prompt when `inject_repo_map` is on.
+- **Index**: `RegexIndex::build` runs once per session thread, then stays
+  live via mtime-validated refresh (debounced on queries;
+  `candidate_files` forces it because grep correctness depends on it).
+  Ranking = file-graph PageRank; `symbols`/`refs`/`outline` tools always
+  join; grep is candidate-filtered when
+  `grep::extract_required_literals` deems the pattern sound; the
+  2k-token repo map is appended to the system prompt when
+  `inject_repo_map` is on.
 - **Hooks**: `hooks.rs` — pre (blocks on failure) / post (appends
   feedback) shell hooks run inside `run_tool`; settings hooks merge with
   `.blurb/hooks.json`. Subagents run hook-free.

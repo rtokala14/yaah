@@ -17,7 +17,6 @@ use crate::config::{PermissionPolicy, RunProfile};
 use crate::context::ContextOptions;
 use crate::prompt::build_system_prompt;
 use crate::providers;
-use crate::tools::builtin_tools;
 use crate::types::*;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use serde::{Deserialize, Serialize};
@@ -251,9 +250,12 @@ fn session_thread(
         }
     };
     let mut system = build_system_prompt(&cwd);
+    // Code index first: it accelerates grep and primes the prompt.
+    let index: Arc<dyn harness_index::CodeIndex> =
+        Arc::new(harness_index::RegexIndex::build(&cwd));
     // Skills: listed in the (cache-stable) prompt, loaded on demand.
     let skills = crate::skills::discover(&cwd, options.skills_global_dir.as_deref());
-    let mut tools = builtin_tools();
+    let mut tools = crate::tools::builtin_tools_with_index(Some(Arc::clone(&index)));
     if let Some(section) = crate::skills::prompt_section(&skills) {
         system.push_str("\n\n");
         system.push_str(&section);
@@ -269,23 +271,18 @@ fn session_thread(
             "MCP server unavailable — {e}"
         ))));
     }
-    // Code index: one build per session; index tools always join (they
-    // degrade gracefully), the repo map lands in the cached prefix.
-    {
-        use harness_index::CodeIndex;
-        let index: Arc<dyn CodeIndex> = Arc::new(harness_index::RegexIndex::build(&cwd));
-        if options.inject_repo_map {
-            if let Ok(map) = index.repo_map(2000) {
-                if !map.is_empty() {
-                    system.push_str("\n\n# Repo map\nKey definitions by file (ranked by cross-file references; not exhaustive — use symbols/refs/outline/grep for anything else):\n");
-                    system.push_str(&map);
-                }
+    // Index tools + repo map (the map goes into the cached prefix).
+    if options.inject_repo_map {
+        if let Ok(map) = index.repo_map(2000) {
+            if !map.is_empty() {
+                system.push_str("\n\n# Repo map\nKey definitions by file (ranked by cross-file references; not exhaustive — use symbols/refs/outline/grep for anything else):\n");
+                system.push_str(&map);
             }
         }
-        tools.push(Arc::new(crate::tools::index_tools::SymbolsTool::new(Arc::clone(&index))));
-        tools.push(Arc::new(crate::tools::index_tools::RefsTool::new(Arc::clone(&index))));
-        tools.push(Arc::new(crate::tools::index_tools::OutlineTool::new(index)));
     }
+    tools.push(Arc::new(crate::tools::index_tools::SymbolsTool::new(Arc::clone(&index))));
+    tools.push(Arc::new(crate::tools::index_tools::RefsTool::new(Arc::clone(&index))));
+    tools.push(Arc::new(crate::tools::index_tools::OutlineTool::new(index)));
     let effort = provider_config.effort;
     let temperature = provider_config.temperature;
     let max_tokens = provider_config.max_tokens;

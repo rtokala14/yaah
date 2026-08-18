@@ -43,12 +43,21 @@ use std::sync::Arc;
 pub const MAX_OUTPUT_CHARS: usize = 40_000; // ~10k tokens per tool result
 
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
+    builtin_tools_with_index(None)
+}
+
+/// The builtin suite with an optional code index: grep gains candidate
+/// filtering (patterns with required literal tokens search only files the
+/// index says can match).
+pub fn builtin_tools_with_index(
+    index: Option<Arc<dyn harness_index::CodeIndex>>,
+) -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(BashTool::new()),
         Arc::new(ReadTool::new()),
         Arc::new(WriteTool::new()),
         Arc::new(EditTool::new()),
-        Arc::new(GrepTool::new()),
+        Arc::new(GrepTool::with_index(index)),
         Arc::new(GlobTool::new()),
         Arc::new(RememberTool::new()),
         Arc::new(RecallTool::new()),

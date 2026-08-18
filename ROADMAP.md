@@ -127,9 +127,19 @@ context/cost with discipline instead of vibes.
   ts/js, go), identifier→files inverted map. Powers `symbols` / `refs` /
   `outline` tools and a token-budgeted repo map (ranked by cross-file
   mentions) injected into the cached system prompt (toggleable in
-  settings). *(done — this iteration)* Phase 2 stays open: tree-sitter
-  precision, trigram-accelerated grep, PageRank ranking, watcher-driven
-  incremental updates, per-worktree overlays (INDEX-DESIGN.md).
+  settings). *(done)*
+- [x] **Code index, phase 2.** The index is now *live and honest*:
+  mtime-validated incremental refresh (stat-walk, reparse only changed
+  files, drop deleted; debounced on queries, forced where correctness
+  depends on it) — never trusted-but-wrong. Ranking is file-graph
+  PageRank (A mentions a symbol defined in B ⇒ edge A→B, generic names
+  capped), driving both symbol ordering and repo-map file order. Grep is
+  index-accelerated: patterns whose structure makes literal extraction
+  sound (no alternation/optionality/classes) search only candidate files
+  containing every required token, with a forced refresh so late-created
+  files are never missed. Languages: rust, python, ts/js, go + new
+  java/kotlin, c/c++, ruby. *(done — this iteration)* Still open:
+  tree-sitter precision, fs-watcher push updates, per-worktree overlays.
 - [x] **Sub-agents.** The `subagent` tool spawns read-only explorer agents
   with fresh contexts; several calls in one turn fan out in parallel via
   the existing tool threads; only final reports return. Recursion fails
@@ -154,8 +164,9 @@ context/cost with discipline instead of vibes.
   interaction channel with Approve / Keep-planning options — approval
   unlocks implementation mid-run. Transitions render as notices; system
   notes steer the model on toggle. *(done — this iteration)*
-- [ ] **Prompt-cache observability.** Show cache hit/miss per turn; warn
-  when an action (prune/compact/profile switch) will invalidate the prefix.
+- [x] **Prompt-cache observability.** Per-turn cache-hit % in the header;
+  unexpected-miss notices with the reprocessed token count; prune/compact
+  notices state their cache cost. *(done — this iteration)*
 
 ## P3 — breadth
 
