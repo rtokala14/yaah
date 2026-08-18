@@ -25,6 +25,7 @@ pub mod http;
 pub mod prompt;
 pub mod providers;
 pub mod session;
+pub mod skills;
 pub mod sse;
 pub mod tools;
 pub mod types;

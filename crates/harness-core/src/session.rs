@@ -80,6 +80,9 @@ pub struct SessionOptions {
     /// Agent-loop turn cap per user message (0 → 1).
     pub max_turns_per_run: u32,
     pub permissions: PermissionPolicy,
+    /// Global skills directory (project skills come from
+    /// `<workspace>/.blurb/skills` automatically).
+    pub skills_global_dir: Option<PathBuf>,
 }
 
 /// Bridges the agent's blocking `ask` to the host over channels: emits a
@@ -237,7 +240,15 @@ fn session_thread(
             return;
         }
     };
-    let system = build_system_prompt(&cwd);
+    let mut system = build_system_prompt(&cwd);
+    // Skills: listed in the (cache-stable) prompt, loaded on demand.
+    let skills = crate::skills::discover(&cwd, options.skills_global_dir.as_deref());
+    let mut tools = builtin_tools();
+    if let Some(section) = crate::skills::prompt_section(&skills) {
+        system.push_str("\n\n");
+        system.push_str(&section);
+        tools.push(Arc::new(crate::skills::SkillTool::new(skills)));
+    }
     let effort = provider_config.effort;
     let temperature = provider_config.temperature;
     let max_tokens = provider_config.max_tokens;
@@ -252,7 +263,7 @@ fn session_thread(
     let mut agent = Agent::new(
         AgentOptions {
             provider,
-            tools: builtin_tools(),
+            tools,
             system,
             cwd,
             max_turns: options.max_turns_per_run.max(1),
