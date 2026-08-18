@@ -18,6 +18,7 @@ mod grep;
 mod read;
 mod recall;
 mod remember;
+mod subagent;
 mod todo;
 mod write;
 
@@ -29,6 +30,7 @@ pub use grep::GrepTool;
 pub use read::ReadTool;
 pub use recall::RecallTool;
 pub use remember::RememberTool;
+pub use subagent::SubagentTool;
 pub use todo::TodoWriteTool;
 pub use write::WriteTool;
 
@@ -49,6 +51,7 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(RecallTool::new()),
         Arc::new(TodoWriteTool::new()),
         Arc::new(AskUserTool::new()),
+        Arc::new(SubagentTool::new()),
     ]
 }
 

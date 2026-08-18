@@ -69,6 +69,18 @@ impl Agent {
             cancel,
             Arc::clone(&opts.interaction),
         ));
+        // Install the nested-agent runner (primary agents only — nested
+        // toolsets exclude the subagent tool, so recursion cannot occur).
+        *tool_ctx.subagent.lock().unwrap() = Some(Arc::new(NestedRunner {
+            provider: Arc::clone(&opts.provider),
+            tools: nested_toolset(&opts.tools),
+            system: opts.system.clone(),
+            cwd: opts.cwd.clone(),
+            context: opts.context.clone(),
+            max_tokens_per_turn: opts.max_tokens_per_turn,
+            effort: opts.effort,
+            temperature: opts.temperature,
+        }));
         Self {
             opts,
             messages: Vec::new(),
@@ -473,6 +485,66 @@ impl Agent {
     }
 }
 
+/// Tools a nested explorer may use: read-only, minus the ones that make no
+/// sense one level down (spawning further subagents, writing the parent's
+/// plan or memory, blocking on the user).
+pub fn nested_toolset(tools: &[Arc<dyn Tool>]) -> Vec<Arc<dyn Tool>> {
+    const EXCLUDED: &[&str] = &["subagent", "todo_write", "remember"];
+    tools
+        .iter()
+        .filter(|t| t.read_only() && !EXCLUDED.contains(&t.def().name.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Runs one nested explorer agent to completion, silently (no event
+/// stream); only the final report crosses back.
+struct NestedRunner {
+    provider: Arc<dyn Provider>,
+    tools: Vec<Arc<dyn Tool>>,
+    system: String,
+    cwd: std::path::PathBuf,
+    context: ContextOptions,
+    max_tokens_per_turn: u32,
+    effort: Option<Effort>,
+    temperature: Option<f64>,
+}
+
+const SUBAGENT_MAX_TURNS: u32 = 25;
+
+impl SubagentRunner for NestedRunner {
+    fn run(&self, task: &str, cancel: &CancelToken) -> Result<String, String> {
+        let mut system = self.system.clone();
+        system.push_str(
+            "\n\n# Subagent\nYou are a read-only explorer subagent. Investigate the task and REPORT — you cannot modify files or run commands. Your final message is delivered verbatim to the primary agent: lead with the answer, cite exact paths and identifiers, and keep it dense.",
+        );
+        let mut agent = Agent::new(
+            AgentOptions {
+                provider: Arc::clone(&self.provider),
+                tools: self.tools.clone(),
+                system,
+                cwd: self.cwd.clone(),
+                max_turns: SUBAGENT_MAX_TURNS,
+                max_tokens_per_turn: self.max_tokens_per_turn,
+                effort: self.effort,
+                temperature: self.temperature,
+                context: self.context.clone(),
+                permissions: crate::config::PermissionPolicy {
+                    ask: false, // toolset is read-only; nothing to gate
+                    ..Default::default()
+                },
+                interaction: Arc::new(NoInteraction),
+            },
+            cancel.clone(),
+        );
+        let result = agent.run(task, &mut |_| {}, cancel);
+        if result.stop_reason == "cancelled" {
+            return Err("cancelled".into());
+        }
+        Ok(result.final_text)
+    }
+}
+
 fn run_tool(
     tool: Option<Arc<dyn Tool>>,
     call: &ToolCallPart,
@@ -494,6 +566,26 @@ fn preview(s: &str) -> String {
     let first = s.lines().next().unwrap_or("");
     let shown: String = first.chars().take(160).collect();
     shown
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::builtin_tools;
+
+    #[test]
+    fn nested_toolset_is_read_only_and_recursion_free() {
+        let names: Vec<String> = nested_toolset(&builtin_tools())
+            .iter()
+            .map(|t| t.def().name.clone())
+            .collect();
+        for banned in ["subagent", "todo_write", "remember", "write", "edit", "bash", "ask_user"] {
+            assert!(!names.contains(&banned.to_string()), "{banned} must be excluded");
+        }
+        for expected in ["read", "grep", "glob", "recall"] {
+            assert!(names.contains(&expected.to_string()), "{expected} must be included");
+        }
+    }
 }
 
 // keep Value import used even if future refactors drop direct uses

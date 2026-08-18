@@ -180,6 +180,12 @@ impl InteractionHandler for NoInteraction {
     }
 }
 
+/// Runs a nested agent on a task, returning its final report. Installed by
+/// the primary agent; absent in nested contexts (no recursive spawning).
+pub trait SubagentRunner: Send + Sync {
+    fn run(&self, task: &str, cancel: &CancelToken) -> Result<String, String>;
+}
+
 /// Shared per-session tool state. `read_files` maps canonical path -> mtime
 /// (as nanos) at last read, for edit staleness checks. `memory` is the
 /// single source of truth for durable session memory — `remember` writes
@@ -193,6 +199,8 @@ pub struct ToolContext {
     pub memory: Mutex<SessionMemory>,
     pub todos: Mutex<Vec<TodoItem>>,
     pub interaction: std::sync::Arc<dyn InteractionHandler>,
+    /// Set only on the primary agent's context.
+    pub subagent: Mutex<Option<std::sync::Arc<dyn SubagentRunner>>>,
 }
 
 impl ToolContext {
@@ -212,6 +220,7 @@ impl ToolContext {
             memory: Mutex::new(SessionMemory::default()),
             todos: Mutex::new(Vec::new()),
             interaction,
+            subagent: Mutex::new(None),
         }
     }
 }
