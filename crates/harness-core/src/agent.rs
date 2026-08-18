@@ -70,6 +70,28 @@ impl Agent {
         &self.messages
     }
 
+    /// Seed the transcript from a persisted journal (session restore).
+    /// Replaces any existing history; the next run continues from it.
+    pub fn restore_messages(&mut self, messages: Vec<AgentMessage>) {
+        self.messages = messages;
+    }
+
+    /// Swap the provider/model for subsequent turns. The transcript is kept
+    /// (the new model sees the full history); the prompt-cache prefix resets,
+    /// which the caller should surface to the user.
+    pub fn set_profile(
+        &mut self,
+        provider: Arc<dyn Provider>,
+        effort: Option<Effort>,
+        temperature: Option<f64>,
+        max_tokens_per_turn: u32,
+    ) {
+        self.opts.provider = provider;
+        self.opts.effort = effort;
+        self.opts.temperature = temperature;
+        self.opts.max_tokens_per_turn = max_tokens_per_turn;
+    }
+
     /// Inject harness-side steering between turns without touching the
     /// system prompt (cache-safe).
     pub fn add_system_note(&mut self, content: impl Into<String>) {

@@ -39,18 +39,25 @@ context/cost with discipline instead of vibes.
   warnings) against gpui-component `1c4e681` / zed `e0931d5a` on Rust
   1.97.1; Cargo.lock + rust-toolchain.toml committed; pinning procedure
   documented in README. *(done — this iteration)*
-- [ ] **Session persistence.** Transcripts + session/worktree bindings
-  survive app restart (journal per session under `.blurb/`). A harness
-  that loses your sessions on quit is a toy.
+- [x] **Session persistence.** Transcripts + session/worktree bindings
+  survive app restart: session metadata in the platform data dir
+  (`~/.local/share/blurb/projects/<key>/sessions.json`), full message
+  history in a per-session journal the session thread rewrites after every
+  run (write-then-rename). On open, agents are re-seeded from their
+  journals and transcripts rebuilt from the same messages; a vanished
+  worktree falls back to the project root. *(done — this iteration)*
 
 ## P1 — what makes it the *best*, not just working
 
-- [ ] **Cost/usage meter.** Per-session cumulative tokens (input/output/
-  cache-read/cache-write) surfaced in the sidebar and chat header; per-turn
-  usage in the transcript. The data already flows (`Usage`), show it.
-- [ ] **Mid-session model switching.** `SessionCommand::SetProfile` swaps
-  the provider/model for subsequent turns without losing the transcript
-  (context stays; cache prefix resets — say so in the UI).
+- [x] **Cost/usage meter.** Sessions report cumulative usage (persisted in
+  the journal); chat header shows turns / prompt tokens / cache-hit % /
+  output tokens; sidebar rows show compact totals. *(done — this iteration;
+  per-turn usage rows + $ estimates remain open)*
+- [x] **Mid-session model switching.** `SessionCommand::SetProfile` swaps
+  provider/model for subsequent turns, transcript kept; a `→ <profile>`
+  button appears in the chat header when the settings default differs from
+  the session's profile; the switch renders as a transcript notice (cache
+  prefix reset called out). *(done — this iteration)*
 - [ ] **Diff review UX.** Click a file in the git panel → full patch view
   (colored hunks); review agent changes before committing. Then: partial
   staging, side-by-side mode.

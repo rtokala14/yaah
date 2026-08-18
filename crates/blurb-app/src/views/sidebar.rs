@@ -7,6 +7,15 @@ use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable as _};
 
+/// "950", "12.4k", "3.1M" — sidebar-compact token counts.
+pub fn format_tokens(n: u64) -> String {
+    match n {
+        0..=999 => format!("{n} tok"),
+        1_000..=999_999 => format!("{:.1}k tok", n as f64 / 1_000.),
+        _ => format!("{:.1}M tok", n as f64 / 1_000_000.),
+    }
+}
+
 pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
     let theme = cx.theme();
     let project_name = view
@@ -49,8 +58,14 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
         // Session list
         .child(
             v_flex().flex_1().px_2().gap_1().overflow_hidden().children(
-                rows.into_iter().map(|(i, title, running, provider)| {
+                rows.into_iter().map(|row| {
+                    let i = row.index;
                     let is_active = active == Some(i);
+                    let meta = if row.total_tokens > 0 {
+                        format!("{} · {}", row.provider_label, format_tokens(row.total_tokens))
+                    } else {
+                        row.provider_label
+                    };
                     div()
                         .id(("session", i))
                         .px_2()
@@ -68,9 +83,9 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
                                     div()
                                         .size_1p5()
                                         .rounded_full()
-                                        .bg(if running { theme.success } else { theme.muted }),
+                                        .bg(if row.running { theme.success } else { theme.muted }),
                                 )
-                                .child(div().text_sm().flex_1().truncate().child(title)),
+                                .child(div().text_sm().flex_1().truncate().child(row.title)),
                         )
                         .child(
                             div()
@@ -78,7 +93,7 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
                                 .truncate()
-                                .child(provider),
+                                .child(meta),
                         )
                 }),
             ),

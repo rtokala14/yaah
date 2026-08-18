@@ -159,6 +159,16 @@ impl RootView {
         }
     }
 
+    /// Point the active session at the settings-selected default
+    /// provider/model for its future turns.
+    pub fn switch_active_session_profile(&mut self, cx: &mut Context<Self>) {
+        if let Some(active) = self.workspace.active_session {
+            let profile = self.workspace.settings.active_profile();
+            self.workspace.switch_session_profile(active, profile);
+            cx.notify();
+        }
+    }
+
     // -- git operations -----------------------------------------------------
 
     pub fn commit_all(&mut self, cx: &mut Context<Self>) {

@@ -77,6 +77,16 @@ impl Settings {
             .expect("normalize() guarantees every provider has a model")
     }
 
+    /// Find the profile whose "Provider · model" label matches — used to
+    /// re-bind restored sessions to their original provider/model.
+    pub fn profile_by_label(&self, label: &str) -> Option<RunProfile> {
+        self.providers.iter().find_map(|p| {
+            (0..p.models.len())
+                .filter_map(|j| p.resolve(j))
+                .find(|profile| profile.label() == label)
+        })
+    }
+
     /// Select provider `p` (and optionally one of its models) as active.
     pub fn select(&mut self, provider: usize, model: Option<usize>) {
         if provider >= self.providers.len() {

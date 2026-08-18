@@ -2,11 +2,16 @@
 //! git state. GPUI-free; the root view owns one of these and re-renders from
 //! it. All methods are cheap except `refresh_git`, which the UI calls from a
 //! background task.
+//!
+//! Sessions persist: metadata (titles, worktree bindings) in the project
+//! store, message history in per-session journals written by the session
+//! threads. `open` restores everything.
 
+use crate::persist::{ProjectStore, SessionMeta};
 use crate::settings::Settings;
 use crate::transcript::Transcript;
 use harness_core::config::RunProfile;
-use harness_core::{SessionCommand, SessionHandle};
+use harness_core::{SessionCommand, SessionEvent, SessionHandle, SessionJournal};
 use harness_git::{GitRepo, RepoSnapshot, WorktreeManager};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,6 +24,15 @@ pub struct SessionState {
     pub provider_label: String,
 }
 
+/// One sidebar row (kept a struct — it keeps growing).
+pub struct SessionRow {
+    pub index: usize,
+    pub title: String,
+    pub running: bool,
+    pub provider_label: String,
+    pub total_tokens: u64,
+}
+
 pub struct Workspace {
     pub settings: Settings,
     pub project_root: PathBuf,
@@ -26,7 +40,7 @@ pub struct Workspace {
     pub active_session: Option<usize>,
     pub git: Option<RepoSnapshot>,
     pub git_error: Option<String>,
-    next_session_id: u64,
+    store: ProjectStore,
     worktrees: WorktreeManager,
 }
 
@@ -35,15 +49,57 @@ impl Workspace {
         settings.remember_project(project_root.clone());
         let _ = settings.save();
         let worktrees = WorktreeManager::new(project_root.clone());
-        Self {
+        let store = ProjectStore::open(&project_root);
+        let mut ws = Self {
             settings,
             project_root,
             sessions: Vec::new(),
             active_session: None,
             git: None,
             git_error: None,
-            next_session_id: 1,
+            store,
             worktrees,
+        };
+        ws.restore_sessions();
+        ws
+    }
+
+    /// Re-spawn every persisted session: agent history from its journal,
+    /// transcript rebuilt from the same messages. A session whose checkout
+    /// vanished (worktree removed outside the app) falls back to the
+    /// project root.
+    fn restore_sessions(&mut self) {
+        let metas: Vec<SessionMeta> = self.store.index.sessions.clone();
+        for meta in metas {
+            let (cwd, worktree) = if meta.cwd.exists() {
+                (meta.cwd.clone(), meta.worktree.clone())
+            } else {
+                (self.project_root.clone(), None)
+            };
+            let profile = self
+                .settings
+                .profile_by_label(&meta.provider_label)
+                .unwrap_or_else(|| self.settings.active_profile());
+            let journal_path = self.store.journal_path(meta.id);
+            let transcript = SessionJournal::load(&journal_path)
+                .map(|j| Transcript::from_messages(&j.messages, j.usage, j.turns))
+                .unwrap_or_default();
+            let handle = SessionHandle::spawn(
+                meta.id,
+                meta.title.clone(),
+                cwd,
+                profile.clone(),
+                Some(journal_path),
+            );
+            self.sessions.push(SessionState {
+                handle,
+                transcript,
+                worktree,
+                provider_label: profile.label(),
+            });
+        }
+        if !self.sessions.is_empty() {
+            self.active_session = Some(self.sessions.len() - 1);
         }
     }
 
@@ -75,10 +131,23 @@ impl Workspace {
             (self.project_root.clone(), None)
         };
 
-        let id = self.next_session_id;
-        self.next_session_id += 1;
+        let id = self.store.allocate_id();
         let provider_label = provider.label();
-        let handle = SessionHandle::spawn(id, title.to_string(), cwd, provider);
+        self.store.register(SessionMeta {
+            id,
+            title: title.to_string(),
+            provider_label: provider_label.clone(),
+            worktree: worktree.clone(),
+            cwd: cwd.clone(),
+        });
+        self.store.save();
+        let handle = SessionHandle::spawn(
+            id,
+            title.to_string(),
+            cwd,
+            provider,
+            Some(self.store.journal_path(id)),
+        );
         self.sessions.push(SessionState {
             handle,
             transcript: Transcript::default(),
@@ -103,15 +172,34 @@ impl Workspace {
         }
     }
 
+    /// Swap the provider/model for a running session's future turns. The
+    /// label updates when the session confirms (`ProfileChanged`).
+    pub fn switch_session_profile(&mut self, session: usize, profile: RunProfile) {
+        if let Some(s) = self.sessions.get(session) {
+            s.handle.send(SessionCommand::SetProfile(profile));
+        }
+    }
+
     /// Drain pending events from every session into its transcript.
     /// Returns true if anything changed (the UI should re-render).
     pub fn pump_events(&mut self) -> bool {
         let mut changed = false;
+        let mut label_updates: Vec<(u64, String)> = Vec::new();
         for s in &mut self.sessions {
             while let Ok(ev) = s.handle.events.try_recv() {
+                if let SessionEvent::ProfileChanged { label } = &ev {
+                    s.provider_label = label.clone();
+                    label_updates.push((s.handle.id, label.clone()));
+                }
                 s.transcript.apply(&ev);
                 changed = true;
             }
+        }
+        if !label_updates.is_empty() {
+            for (id, label) in label_updates {
+                self.store.update_provider_label(id, &label);
+            }
+            self.store.save();
         }
         changed
     }
@@ -121,6 +209,8 @@ impl Workspace {
             return;
         }
         let state = self.sessions.remove(index);
+        self.store.remove(state.handle.id);
+        self.store.save();
         if remove_worktree {
             if let Some(name) = &state.worktree {
                 let _ = self.worktrees.remove_session_worktree(name);
@@ -133,13 +223,18 @@ impl Workspace {
         };
     }
 
-    /// Sessions grouped for the sidebar: (index, title, running, provider).
-    pub fn session_rows(&self) -> Vec<(usize, String, bool, String)> {
+    pub fn session_rows(&self) -> Vec<SessionRow> {
         self.sessions
             .iter()
             .enumerate()
-            .map(|(i, s)| {
-                (i, s.handle.title.clone(), s.transcript.running, s.provider_label.clone())
+            .map(|(i, s)| SessionRow {
+                index: i,
+                title: s.handle.title.clone(),
+                running: s.transcript.running,
+                provider_label: s.provider_label.clone(),
+                total_tokens: s.transcript.usage.input_tokens
+                    + s.transcript.usage.cache_read_tokens
+                    + s.transcript.usage.output_tokens,
             })
             .collect()
     }

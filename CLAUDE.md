@@ -31,6 +31,19 @@ covers architecture, `INDEX-DESIGN.md` the future code index.
   (`~/.config/blurb/settings.toml`) is persistence, not an interface —
   never build a feature that requires hand-editing it.
 
+## Persistence model
+
+- Session **message history** is journaled by the session thread itself
+  (`SessionJournal`, write-then-rename after every run) to a path the host
+  passes into `SessionHandle::spawn`. Cumulative usage rides along.
+- App-side **metadata** (titles, worktree bindings, provider labels) lives
+  in `blurb-app/src/persist.rs` (`ProjectStore`), under the platform data
+  dir keyed by project-root hash. Nothing is written into the user's repo.
+- On open, `Workspace::restore_sessions` re-spawns each session seeded
+  from its journal and rebuilds the UI transcript from the same messages
+  (`Transcript::from_messages`). One format, two readers, one writer.
+- `RunFinished.usage` is **cumulative** for the session, not per-run.
+
 ## Threading model (don't fight it)
 
 UI thread (GPUI) ⇄ one OS thread per session over crossbeam channels

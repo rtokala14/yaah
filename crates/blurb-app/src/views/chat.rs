@@ -17,6 +17,12 @@ pub fn render(
 ) -> impl IntoElement {
     let theme = cx.theme();
     let active = view.workspace.active_session.and_then(|i| view.workspace.sessions.get(i));
+    // Offer switching the running session to the settings-selected default
+    // when they differ.
+    let default_profile = view.workspace.settings.active_profile();
+    let switch_offer = active
+        .filter(|s| s.provider_label != default_profile.label())
+        .map(|_| default_profile.label());
 
     let header: AnyElement = match active {
         Some(s) => h_flex()
@@ -56,6 +62,17 @@ pub fn render(
                     .child(
                         div().text_xs().text_color(theme.muted_foreground).child(usage_line(s)),
                     )
+                    .when_some(switch_offer, |this, label| {
+                        this.child(
+                            Button::new("switch-profile")
+                                .label(format!("→ {label}"))
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.switch_active_session_profile(cx)
+                                })),
+                        )
+                    })
                     .when(s.transcript.running, |this| {
                         this.child(
                             Button::new("interrupt")
@@ -142,14 +159,19 @@ pub fn render(
 
 fn usage_line(s: &crate::workspace::SessionState) -> String {
     let u = &s.transcript.usage;
-    if u.input_tokens == 0 && u.output_tokens == 0 {
-        String::new()
-    } else {
-        format!(
-            "{} turns · in {} (cache {}) · out {}",
-            s.transcript.turns, u.input_tokens, u.cache_read_tokens, u.output_tokens
-        )
+    if u.input_tokens == 0 && u.output_tokens == 0 && u.cache_read_tokens == 0 {
+        return String::new();
     }
+    let prompt_total = u.input_tokens + u.cache_read_tokens;
+    let cache_pct = if prompt_total > 0 {
+        (u.cache_read_tokens as f64 / prompt_total as f64 * 100.).round() as u64
+    } else {
+        0
+    };
+    format!(
+        "{} turns · in {} ({cache_pct}% cached) · out {}",
+        s.transcript.turns, prompt_total, u.output_tokens
+    )
 }
 
 fn render_block(
