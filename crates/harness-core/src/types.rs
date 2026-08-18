@@ -93,11 +93,25 @@ impl ToolOutput {
 }
 
 /// Shared per-session tool state. `read_files` maps canonical path -> mtime
-/// (as nanos) at last read, for edit staleness checks.
+/// (as nanos) at last read, for edit staleness checks. `memory_notes`
+/// collects notes recorded via the `remember` tool during a batch; the
+/// agent drains them into its durable session memory.
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancel: CancelToken,
     pub read_files: Mutex<HashMap<PathBuf, u128>>,
+    pub memory_notes: Mutex<Vec<String>>,
+}
+
+impl ToolContext {
+    pub fn new(cwd: PathBuf, cancel: CancelToken) -> Self {
+        Self {
+            cwd,
+            cancel,
+            read_files: Mutex::new(HashMap::new()),
+            memory_notes: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 pub trait Tool: Send + Sync {
@@ -237,6 +251,8 @@ pub enum AgentEvent {
     ToolEnd { name: String, output_preview: String, is_error: bool, duration_ms: u64 },
     Compaction { before_tokens: usize },
     Pruned { count: usize },
+    /// The agent recorded a durable memory note (via the `remember` tool).
+    MemoryNote { text: String },
     TurnEnd { stop_reason: StopReason, usage: Usage },
     Done { reason: String, final_text: String },
     Error(String),

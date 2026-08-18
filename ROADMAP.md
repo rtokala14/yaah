@@ -56,6 +56,15 @@ context/cost with discipline instead of vibes.
   summarization request so it can't overflow. Per-model `context_window`
   drives the budget; the chat header shows live context pressure
   (`ctx N%`). *(done — this iteration)*
+- [x] **Durable cross-compaction memory.** The agent records dense notes
+  via a `remember` tool (decisions, constraints, learned facts); notes
+  live in `SessionMemory`, persist in the journal, and are re-injected
+  verbatim into every compaction replacement (bounded digest — oldest and
+  newest notes win when over budget). Every compaction summary is
+  archived in memory for the record. The system prompt teaches the model
+  to use it in long sessions. *(done — this iteration)* Still open:
+  surfacing notes/summaries in the UI (a memory panel), and a recall tool
+  over archived summaries.
 
 ## P1 — what makes it the *best*, not just working
 

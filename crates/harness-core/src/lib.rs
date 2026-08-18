@@ -31,5 +31,6 @@ pub mod types;
 
 pub use agent::{Agent, AgentOptions, AgentResult};
 pub use config::{ModelConfig, ProviderConfig, ProviderKind, RunProfile};
+pub use context::SessionMemory;
 pub use session::{SessionCommand, SessionEvent, SessionHandle, SessionJournal};
 pub use types::*;

@@ -15,6 +15,69 @@
 //!    sessions from drifting; the verbatim tail keeps in-flight work sharp.
 
 use crate::types::*;
+use serde::{Deserialize, Serialize};
+
+/// Durable session memory: survives compaction (re-injected verbatim into
+/// every compacted transcript) and app restarts (persisted in the session
+/// journal).
+///
+/// - `notes`: agent-authored via the `remember` tool — decisions,
+///   constraints, learned facts. The curated, high-value channel.
+/// - `summaries`: every compaction's handoff summary, archived in order.
+///   The historical record; not re-injected (the newest summary is already
+///   in the transcript), but inspectable and available to future features.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionMemory {
+    #[serde(default)]
+    pub notes: Vec<String>,
+    #[serde(default)]
+    pub summaries: Vec<String>,
+}
+
+/// Character budget for the injected digest — memory must never become the
+/// context problem it exists to solve.
+const MEMORY_DIGEST_MAX_CHARS: usize = 12_000;
+
+/// Render notes as the digest message injected on compaction. When over
+/// budget, the oldest and newest notes win (foundational decisions and
+/// fresh learnings); the middle is elided with a marker.
+pub fn memory_digest(memory: &SessionMemory) -> Option<String> {
+    if memory.notes.is_empty() {
+        return None;
+    }
+    let total: usize = memory.notes.iter().map(|n| n.len() + 3).sum();
+    let selected: Vec<String> = if total <= MEMORY_DIGEST_MAX_CHARS {
+        memory.notes.iter().map(|n| format!("- {n}")).collect()
+    } else {
+        let mut front = Vec::new();
+        let mut used = 0usize;
+        let mut i = 0usize;
+        while i < memory.notes.len() && used + memory.notes[i].len() < MEMORY_DIGEST_MAX_CHARS / 3
+        {
+            used += memory.notes[i].len() + 3;
+            front.push(format!("- {}", memory.notes[i]));
+            i += 1;
+        }
+        let mut back = Vec::new();
+        let mut j = memory.notes.len();
+        while j > i && used + memory.notes[j - 1].len() < MEMORY_DIGEST_MAX_CHARS {
+            j -= 1;
+            used += memory.notes[j].len() + 3;
+            back.push(format!("- {}", memory.notes[j]));
+        }
+        back.reverse();
+        let mut out = front;
+        if j > i {
+            out.push(format!("- [{} older notes elided]", j - i));
+        }
+        out.extend(back);
+        out
+    };
+    Some(format!(
+        "<session-memory>\nDurable notes recorded during this session (via the remember tool):\n{}\n</session-memory>",
+        selected.join("\n")
+    ))
+}
 
 /// Cheap token estimate: ~4 chars/token. Used only for budgeting decisions;
 /// real usage from the provider recalibrates nothing here by design (the
@@ -201,7 +264,10 @@ fn original_task(messages: &[AgentMessage]) -> Option<String> {
         if let Some(inner) = unwrap_pinned_task(text) {
             return Some(inner);
         }
-        if first_plain.is_none() && !text.starts_with("<session-summary>") {
+        if first_plain.is_none()
+            && !text.starts_with("<session-summary>")
+            && !text.starts_with("<session-memory>")
+        {
             first_plain = Some(text.to_string());
         }
     }
@@ -217,20 +283,22 @@ fn unwrap_pinned_task(text: &str) -> Option<String> {
 }
 
 /// Compact the transcript via a model-written summary. Returns the
-/// replacement message list:
-/// [pinned original task] + [summary] + [recent tail, verbatim].
+/// replacement message list —
+/// [pinned original task] + [memory digest] + [summary] + [tail, verbatim]
+/// — plus the summary text so the caller can archive it in session memory.
 pub fn compact(
     provider: &dyn Provider,
     system: &str,
     messages: &[AgentMessage],
+    memory: &SessionMemory,
     opts: &ContextOptions,
     cancel: &CancelToken,
-) -> Result<Vec<AgentMessage>, ProviderError> {
+) -> Result<(Vec<AgentMessage>, String), ProviderError> {
     let tail_from = messages.len().saturating_sub(opts.compact_keep_tail);
     let tail_start = safe_tail_start(messages, tail_from);
     let head = &messages[..tail_start];
     if head.is_empty() {
-        return Ok(messages.to_vec()); // nothing to summarize
+        return Ok((messages.to_vec(), String::new())); // nothing to summarize
     }
 
     // Guard the summarization request itself: if the head alone exceeds the
@@ -295,6 +363,9 @@ pub fn compact(
             }],
         });
     }
+    if let Some(digest) = memory_digest(memory) {
+        replacement.push(AgentMessage::User { content: vec![UserPart::Text { text: digest }] });
+    }
     replacement.push(AgentMessage::User {
         content: vec![UserPart::Text {
             text: format!(
@@ -303,7 +374,7 @@ pub fn compact(
         }],
     });
     replacement.extend_from_slice(&messages[tail_start..]);
-    Ok(replacement)
+    Ok((replacement, summary))
 }
 
 #[cfg(test)]
@@ -454,7 +525,16 @@ mod tests {
         };
         let messages = long_transcript(40); // ~50k estimated tokens
         let provider = FakeProvider { last_request_tokens: Mutex::new(0) };
-        let out = compact(&provider, "sys", &messages, &opts, &CancelToken::new()).unwrap();
+        let (out, summary) = compact(
+            &provider,
+            "sys",
+            &messages,
+            &SessionMemory::default(),
+            &opts,
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert_eq!(summary, "SUMMARY");
 
         // Original task pinned verbatim, summary present, tail kept.
         assert!(matches!(&out[0], AgentMessage::User { content }
@@ -480,9 +560,15 @@ mod tests {
     fn compact_after_compact_keeps_original_task_pinned() {
         let opts = ContextOptions { compact_keep_tail: 2, ..Default::default() };
         let provider = FakeProvider { last_request_tokens: Mutex::new(0) };
+        let memory = SessionMemory {
+            notes: vec!["ci needs libxkbcommon-dev".into()],
+            summaries: vec![],
+        };
         let messages = long_transcript(10);
-        let once = compact(&provider, "sys", &messages, &opts, &CancelToken::new()).unwrap();
-        let twice = compact(&provider, "sys", &once, &opts, &CancelToken::new()).unwrap();
+        let (once, _) =
+            compact(&provider, "sys", &messages, &memory, &opts, &CancelToken::new()).unwrap();
+        let (twice, _) =
+            compact(&provider, "sys", &once, &memory, &opts, &CancelToken::new()).unwrap();
         // The pinned task survives a second compaction and is not the
         // synthetic wrapper being re-pinned recursively.
         let pinned = match &twice[0] {
@@ -494,6 +580,31 @@ mod tests {
         };
         assert!(pinned.contains("build the feature"));
         assert!(!pinned.contains("<original-task>\nThe user's original request, verbatim:\n\n<original-task>"));
+        // Memory notes are re-injected verbatim on every compaction.
+        for out in [&once, &twice] {
+            let has_digest = out.iter().any(|m| matches!(m, AgentMessage::User { content }
+                if matches!(&content[0], UserPart::Text { text }
+                    if text.starts_with("<session-memory>") && text.contains("libxkbcommon-dev"))));
+            assert!(has_digest, "memory digest must appear after compaction");
+        }
+    }
+
+    #[test]
+    fn memory_digest_caps_size_keeping_oldest_and_newest() {
+        let mut memory = SessionMemory::default();
+        for i in 0..400 {
+            memory.notes.push(format!("note number {i} with some padding text to add bulk"));
+        }
+        let digest = memory_digest(&memory).unwrap();
+        assert!(digest.len() < 14_000, "digest must stay bounded, got {}", digest.len());
+        assert!(digest.contains("note number 0"), "oldest notes survive");
+        assert!(digest.contains("note number 399"), "newest notes survive");
+        assert!(digest.contains("older notes elided"));
+        // Small memories are rendered whole, no markers.
+        let small = SessionMemory { notes: vec!["a".into(), "b".into()], summaries: vec![] };
+        let d = memory_digest(&small).unwrap();
+        assert!(d.contains("- a") && d.contains("- b") && !d.contains("elided"));
+        assert!(memory_digest(&SessionMemory::default()).is_none());
     }
 
     #[test]

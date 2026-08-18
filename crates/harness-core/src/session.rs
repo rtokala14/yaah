@@ -14,7 +14,7 @@
 
 use crate::agent::{Agent, AgentOptions};
 use crate::config::RunProfile;
-use crate::context::ContextOptions;
+use crate::context::{ContextOptions, SessionMemory};
 use crate::prompt::build_system_prompt;
 use crate::providers;
 use crate::tools::builtin_tools;
@@ -55,6 +55,9 @@ pub struct SessionJournal {
     pub usage: Usage,
     #[serde(default)]
     pub turns: u32,
+    /// Durable memory: agent-authored notes + archived compaction summaries.
+    #[serde(default)]
+    pub memory: SessionMemory,
 }
 
 impl SessionJournal {
@@ -188,6 +191,7 @@ fn session_thread(
         if let Some(journal) = SessionJournal::load(path) {
             session_usage = journal.usage;
             agent.restore_messages(journal.messages);
+            agent.restore_memory(journal.memory);
         }
     }
     let persist = |agent: &Agent, usage: Usage, turns: u32| {
@@ -197,6 +201,7 @@ fn session_thread(
                 messages: agent.messages().to_vec(),
                 usage,
                 turns,
+                memory: agent.memory().clone(),
             }
             .save(path);
         }
@@ -270,12 +275,18 @@ mod tests {
             ],
             usage: Usage { input_tokens: 10, output_tokens: 5, ..Default::default() },
             turns: 1,
+            memory: SessionMemory {
+                notes: vec!["tests run headless".into()],
+                summaries: vec!["epoch 1 summary".into()],
+            },
         };
         journal.save(&path);
         let loaded = SessionJournal::load(&path).unwrap();
         assert_eq!(loaded.messages.len(), 3);
         assert_eq!(loaded.usage.input_tokens, 10);
         assert_eq!(loaded.turns, 1);
+        assert_eq!(loaded.memory.notes, vec!["tests run headless".to_string()]);
+        assert_eq!(loaded.memory.summaries.len(), 1);
 
         // Corrupt file → load returns None instead of panicking.
         std::fs::write(&path, "{not json").unwrap();

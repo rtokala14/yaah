@@ -201,6 +201,9 @@ impl Transcript {
                     text: format!("pruned {count} stale tool results from context"),
                 });
             }
+            AgentEvent::MemoryNote { text } => {
+                self.blocks.push(Block::Notice { text: format!("remembered: {text}") });
+            }
             AgentEvent::Compaction { before_tokens } => {
                 self.blocks.push(Block::Notice {
                     text: format!("compacting context (~{before_tokens} tokens)"),
