@@ -9,6 +9,7 @@
 //!  - Every output is token-budgeted with an explicit truncation marker
 //!    telling the model how to narrow the request; never silent.
 
+mod ask_user;
 mod bash;
 mod edit;
 mod fsutil;
@@ -17,8 +18,10 @@ mod grep;
 mod read;
 mod recall;
 mod remember;
+mod todo;
 mod write;
 
+pub use ask_user::AskUserTool;
 pub use bash::BashTool;
 pub use edit::EditTool;
 pub use glob_tool::GlobTool;
@@ -26,6 +29,7 @@ pub use grep::GrepTool;
 pub use read::ReadTool;
 pub use recall::RecallTool;
 pub use remember::RememberTool;
+pub use todo::TodoWriteTool;
 pub use write::WriteTool;
 
 use crate::types::Tool;
@@ -43,6 +47,8 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(GlobTool::new()),
         Arc::new(RememberTool::new()),
         Arc::new(RecallTool::new()),
+        Arc::new(TodoWriteTool::new()),
+        Arc::new(AskUserTool::new()),
     ]
 }
 

@@ -5,7 +5,7 @@
 //! every field is editable in-app (settings overlay); legacy flat-format
 //! files (provider-level `model`/`effort`) migrate on load.
 
-use harness_core::config::{ProviderConfig, ProviderKind, RunProfile};
+use harness_core::config::{PermissionPolicy, ProviderConfig, ProviderKind, RunProfile};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -26,6 +26,9 @@ pub struct Settings {
     /// unbounded; this only bounds one run.
     #[serde(default = "default_max_turns")]
     pub max_turns_per_run: u32,
+    /// What the agent may do without asking (edits, shell allowlist).
+    #[serde(default)]
+    pub permissions: PermissionPolicy,
 }
 
 fn default_true() -> bool {
@@ -44,6 +47,7 @@ impl Default for Settings {
             recent_projects: Vec::new(),
             sessions_use_worktrees: true,
             max_turns_per_run: default_max_turns(),
+            permissions: PermissionPolicy::default(),
         }
     }
 }

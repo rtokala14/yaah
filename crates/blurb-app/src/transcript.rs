@@ -3,7 +3,7 @@
 //! GPUI-free so it can be unit-tested; the chat view just draws it.
 
 use harness_core::types::{
-    AgentEvent, AgentMessage, AssistantPart, StopReason, Usage, UserPart,
+    AgentEvent, AgentMessage, AssistantPart, StopReason, TodoItem, Usage, UserPart,
 };
 use harness_core::SessionEvent;
 
@@ -22,6 +22,10 @@ pub enum Block {
     },
     Notice { text: String },
     Error { text: String },
+    /// The agent asked the user something; `answer` fills in when replied.
+    Question { id: u64, question: String, options: Vec<String>, answer: Option<String> },
+    /// A gated tool call awaiting approval; `decision` fills in when decided.
+    Permission { id: u64, tool: String, summary: String, decision: Option<String> },
 }
 
 #[derive(Debug, Default)]
@@ -37,6 +41,12 @@ pub struct Transcript {
     pub context_budget: usize,
     /// Durable memory notes recorded so far (header indicator).
     pub memory_count: usize,
+    /// The session's live todo list (rendered as a panel).
+    pub todos: Vec<TodoItem>,
+    /// Unanswered ask_user question, if any (routes the prompt input).
+    pub pending_question: Option<u64>,
+    /// Undecided permission request, if any.
+    pub pending_permission: Option<u64>,
 }
 
 impl Transcript {
@@ -127,6 +137,9 @@ impl Transcript {
                 self.turns = *turns;
                 self.usage = *usage;
                 self.last_stop = Some(stop_reason.clone());
+                // Any interaction still open is moot once the run ended.
+                self.pending_question = None;
+                self.pending_permission = None;
                 self.finish_streaming();
             }
             SessionEvent::ProfileChanged { label } => {
@@ -134,11 +147,74 @@ impl Transcript {
                     text: format!("switched to {label} (prompt-cache prefix resets)"),
                 });
             }
+            SessionEvent::AskUser { id, question, options } => {
+                self.finish_streaming();
+                self.pending_question = Some(*id);
+                self.blocks.push(Block::Question {
+                    id: *id,
+                    question: question.clone(),
+                    options: options.clone(),
+                    answer: None,
+                });
+            }
+            SessionEvent::PermissionRequest { id, tool, summary } => {
+                self.finish_streaming();
+                self.pending_permission = Some(*id);
+                self.blocks.push(Block::Permission {
+                    id: *id,
+                    tool: tool.clone(),
+                    summary: summary.clone(),
+                    decision: None,
+                });
+            }
             SessionEvent::Fatal(msg) => {
                 self.running = false;
+                self.pending_question = None;
+                self.pending_permission = None;
                 self.blocks.push(Block::Error { text: msg.clone() });
             }
         }
+    }
+
+    /// Mark a question answered (the reply is already on its way to the
+    /// session thread).
+    pub fn record_answer(&mut self, id: u64, text: &str) {
+        if self.pending_question == Some(id) {
+            self.pending_question = None;
+        }
+        if let Some(Block::Question { answer, .. }) = self
+            .blocks
+            .iter_mut()
+            .rev()
+            .find(|b| matches!(b, Block::Question { id: qid, .. } if *qid == id))
+        {
+            *answer = Some(text.to_string());
+        }
+    }
+
+    /// Mark a permission request decided.
+    pub fn record_decision(&mut self, id: u64, label: &str) {
+        if self.pending_permission == Some(id) {
+            self.pending_permission = None;
+        }
+        if let Some(Block::Permission { decision, .. }) = self
+            .blocks
+            .iter_mut()
+            .rev()
+            .find(|b| matches!(b, Block::Permission { id: pid, .. } if *pid == id))
+        {
+            *decision = Some(label.to_string());
+        }
+    }
+
+    /// (tool, summary) of a permission block, for persisting AllowAlways.
+    pub fn permission_subject(&self, id: u64) -> Option<(String, String)> {
+        self.blocks.iter().rev().find_map(|b| match b {
+            Block::Permission { id: pid, tool, summary, .. } if *pid == id => {
+                Some((tool.clone(), summary.clone()))
+            }
+            _ => None,
+        })
     }
 
     fn apply_agent(&mut self, ev: &AgentEvent) {
@@ -206,6 +282,9 @@ impl Transcript {
             AgentEvent::MemoryNote { text } => {
                 self.memory_count += 1;
                 self.blocks.push(Block::Notice { text: format!("◆ remembered: {text}") });
+            }
+            AgentEvent::TodosUpdated { todos } => {
+                self.todos = todos.clone();
             }
             AgentEvent::Compaction { before_tokens } => {
                 self.blocks.push(Block::Notice {
@@ -329,6 +408,50 @@ mod tests {
         assert_eq!(t.usage.input_tokens, 100);
         assert_eq!(t.turns, 2);
         assert!(!t.running);
+    }
+
+    #[test]
+    fn interaction_events_fold_and_resolve() {
+        use harness_core::types::{TodoItem, TodoStatus};
+        let mut t = Transcript::default();
+
+        t.apply(&SessionEvent::PermissionRequest {
+            id: 1,
+            tool: "bash".into(),
+            summary: "cargo test".into(),
+        });
+        assert_eq!(t.pending_permission, Some(1));
+        assert_eq!(t.permission_subject(1), Some(("bash".into(), "cargo test".into())));
+        t.record_decision(1, "allowed");
+        assert_eq!(t.pending_permission, None);
+        assert!(matches!(&t.blocks[0],
+            Block::Permission { decision: Some(d), .. } if d == "allowed"));
+
+        t.apply(&SessionEvent::AskUser {
+            id: 2,
+            question: "Which db?".into(),
+            options: vec!["sqlite".into()],
+        });
+        assert_eq!(t.pending_question, Some(2));
+        t.record_answer(2, "sqlite");
+        assert_eq!(t.pending_question, None);
+        assert!(matches!(&t.blocks[1],
+            Block::Question { answer: Some(a), .. } if a == "sqlite"));
+
+        t.apply(&SessionEvent::Agent(E::TodosUpdated {
+            todos: vec![TodoItem { text: "step 1".into(), status: TodoStatus::InProgress }],
+        }));
+        assert_eq!(t.todos.len(), 1);
+
+        // A run ending clears any stray pending interaction.
+        t.apply(&SessionEvent::AskUser { id: 3, question: "q".into(), options: vec![] });
+        t.apply(&SessionEvent::RunFinished {
+            final_text: String::new(),
+            turns: 1,
+            usage: Usage::default(),
+            stop_reason: "cancelled".into(),
+        });
+        assert_eq!(t.pending_question, None);
     }
 
     #[test]

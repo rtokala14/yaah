@@ -95,6 +95,12 @@ impl ProjectStore {
             s.provider_label = label.to_string();
         }
     }
+
+    pub fn update_title(&mut self, id: u64, title: &str) {
+        if let Some(s) = self.index.sessions.iter_mut().find(|s| s.id == id) {
+            s.title = title.to_string();
+        }
+    }
 }
 
 /// Stable directory name for a project root: last path component + short

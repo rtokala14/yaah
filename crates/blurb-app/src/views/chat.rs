@@ -15,8 +15,12 @@ pub fn render(
     _window: &mut Window,
     cx: &mut Context<RootView>,
 ) -> impl IntoElement {
-    let theme = cx.theme();
+    // Cloned: interactive blocks need `cx` for listeners while styling reads
+    // the theme.
+    let theme = cx.theme().clone();
+    let theme = &theme;
     let active = view.workspace.active_session.and_then(|i| view.workspace.sessions.get(i));
+    let todos = active.map(|s| s.transcript.todos.clone()).unwrap_or_default();
     // Offer switching the running session to the settings-selected default
     // when they differ.
     let default_profile = view.workspace.settings.active_profile();
@@ -112,7 +116,7 @@ pub fn render(
                         .p_4()
                         .gap_3()
                         .children(blocks.into_iter().enumerate().map(|(i, b)| {
-                            render_block(i, b, theme)
+                            render_block(i, b, theme, cx)
                         })),
                 )
                 .vertical_scrollbar(&view.transcript_scroll)
@@ -181,7 +185,61 @@ pub fn render(
                 })),
         );
 
-    v_flex().size_full().min_w_0().child(header).child(transcript).child(input_row)
+    // Live plan panel (todo_write): compact, auto-hides when empty.
+    let todo_panel: Option<AnyElement> = if todos.is_empty() {
+        None
+    } else {
+        let done = todos
+            .iter()
+            .filter(|t| t.status == harness_core::types::TodoStatus::Done)
+            .count();
+        Some(
+            v_flex()
+                .px_4()
+                .py_2()
+                .gap_1()
+                .border_b_1()
+                .border_color(theme.border)
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.muted_foreground)
+                        .child(format!("PLAN · {done}/{}", todos.len())),
+                )
+                .children(todos.into_iter().map(|t| {
+                    use harness_core::types::TodoStatus;
+                    let (glyph, color) = match t.status {
+                        TodoStatus::Done => ("✓", theme.success),
+                        TodoStatus::InProgress => ("▶", theme.warning),
+                        TodoStatus::Pending => ("○", theme.muted_foreground),
+                    };
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .text_xs()
+                        .child(div().w(px(14.)).text_color(color).child(glyph))
+                        .child(
+                            div()
+                                .flex_1()
+                                .truncate()
+                                .when(t.status == TodoStatus::Done, |d| {
+                                    d.text_color(theme.muted_foreground)
+                                })
+                                .child(t.text),
+                        )
+                }))
+                .into_any_element(),
+        )
+    };
+
+    v_flex()
+        .size_full()
+        .min_w_0()
+        .child(header)
+        .children(todo_panel)
+        .child(transcript)
+        .child(input_row)
 }
 
 fn usage_line(s: &crate::workspace::SessionState) -> String {
@@ -215,8 +273,126 @@ fn render_block(
     i: usize,
     block: Block,
     theme: &gpui_component::theme::Theme,
+    cx: &mut Context<RootView>,
 ) -> AnyElement {
     match block {
+        Block::Question { id, question, options, answer } => v_flex()
+            .px_3()
+            .py_2()
+            .gap_2()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(theme.primary)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().text_sm().text_color(theme.primary).child("?"))
+                    .child(div().text_sm().font_weight(FontWeight::BOLD).child(question)),
+            )
+            .child(match answer {
+                Some(a) => div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(format!("answered: {a}"))
+                    .into_any_element(),
+                None => h_flex()
+                    .gap_2()
+                    .items_center()
+                    .flex_wrap()
+                    .children(options.into_iter().enumerate().map(|(k, opt)| {
+                        let reply = opt.clone();
+                        Button::new(("q-opt", i * 100 + k)).label(opt).small().on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.answer_question(id, reply.clone(), cx)
+                            }),
+                        )
+                    }))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("…or type a reply below"),
+                    )
+                    .into_any_element(),
+            })
+            .into_any_element(),
+        Block::Permission { id, tool, summary, decision } => v_flex()
+            .px_3()
+            .py_2()
+            .gap_2()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(theme.warning)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!("{tool} wants to run:")),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .font_family("monospace")
+                            .truncate()
+                            .child(summary),
+                    ),
+            )
+            .child(match decision {
+                Some(d) => div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(d)
+                    .into_any_element(),
+                None => h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new(("perm-allow", i))
+                            .label("Allow")
+                            .primary()
+                            .small()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.permission_decision(
+                                    id,
+                                    harness_core::types::PermissionDecision::Allow,
+                                    cx,
+                                )
+                            })),
+                    )
+                    .child(
+                        Button::new(("perm-always", i))
+                            .label("Always allow")
+                            .ghost()
+                            .small()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.permission_decision(
+                                    id,
+                                    harness_core::types::PermissionDecision::AllowAlways,
+                                    cx,
+                                )
+                            })),
+                    )
+                    .child(
+                        Button::new(("perm-deny", i))
+                            .label("Deny")
+                            .danger()
+                            .small()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.permission_decision(
+                                    id,
+                                    harness_core::types::PermissionDecision::Deny,
+                                    cx,
+                                )
+                            })),
+                    )
+                    .into_any_element(),
+            })
+            .into_any_element(),
         Block::UserMessage { text } => div()
             .px_3()
             .py_2()

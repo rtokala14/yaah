@@ -96,12 +96,27 @@ context/cost with discipline instead of vibes.
   one-click cleanup: close the owning session, remove the worktree, delete
   the merged branch (dismissable). *(done — this iteration)* Still open:
   divergence warnings before merge.
-- [ ] **Permission model.** Tool allowlists per project (bash command
-  approval, path fences) — trust is a product feature.
+- [x] **Permission model.** Gated tools (write/edit/bash) ask the user
+  before running: Allow / Always allow / Deny cards in the chat.
+  AllowAlways persists (bash programs into an allowlist with prefix
+  matching, edits as a flag); the allowlist is managed as removable chips
+  in settings, next to the master ask switch. The session thread blocks on
+  a cancel-aware interaction channel; headless hosts auto-deny with an
+  actionable message. *(done — this iteration)* Still open: path fences,
+  per-project (vs global) policies.
+- [x] **Ask-the-user.** An `ask_user` tool lets the agent pose a question
+  mid-run (with optional option buttons); typed input answers a pending
+  question instead of starting a new task. *(done — this iteration)*
+- [x] **Todo lists.** A `todo_write` tool (replace-whole-list semantics,
+  pending/in_progress/done) renders as a live PLAN panel in the chat pane,
+  persists in the journal, and restores with the session.
+  *(done — this iteration)*
 - [ ] **Model catalog fetch.** "Fetch models" button per provider: query
   `/v1/models` (OpenAI-compat) / Anthropic models endpoint, one-click add.
-- [ ] **Session titles that mean something.** Auto-title from first prompt
-  (cheap model call), rename inline.
+- [x] **Session titles that mean something.** Sessions auto-title from
+  their first prompt with one cheap low-effort model call (sanitized,
+  background, failure keeps the placeholder). *(done — this iteration)*
+  Still open: inline rename.
 
 ## P2 — compounding advantages
 

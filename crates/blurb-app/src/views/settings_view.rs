@@ -545,6 +545,80 @@ fn render_list(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement 
                 }),
             ),
         )
+        // Permissions
+        .child({
+            let policy = view.workspace.settings.permissions.clone();
+            v_flex()
+                .px_4()
+                .py_3()
+                .gap_2()
+                .border_t_1()
+                .border_color(theme.border)
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.muted_foreground)
+                        .child("PERMISSIONS"),
+                )
+                .child(
+                    h_flex()
+                        .gap_4()
+                        .items_center()
+                        .child(
+                            Switch::new("perm-ask")
+                                .checked(policy.ask)
+                                .label("Ask before edits & commands")
+                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    this.workspace.settings.permissions.ask = *checked;
+                                    this.save_settings(cx);
+                                })),
+                        )
+                        .child(
+                            Switch::new("perm-edits")
+                                .checked(policy.allow_edits)
+                                .label("Pre-approve file edits")
+                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    this.workspace.settings.permissions.allow_edits = *checked;
+                                    this.save_settings(cx);
+                                })),
+                        ),
+                )
+                .child(if policy.allowed_bash.is_empty() {
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(
+                            "No pre-approved commands. Choosing \"Always allow\" on a prompt \
+                             adds its program here.",
+                        )
+                        .into_any_element()
+                } else {
+                    h_flex()
+                        .gap_1()
+                        .flex_wrap()
+                        .children(policy.allowed_bash.into_iter().enumerate().map(|(k, cmd)| {
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .px_1p5()
+                                .rounded(theme.radius)
+                                .bg(theme.muted)
+                                .text_xs()
+                                .child(cmd)
+                                .child(
+                                    Button::new(("rm-bash", k))
+                                        .icon(IconName::Close)
+                                        .ghost()
+                                        .xsmall()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.remove_allowed_bash(k, cx)
+                                        })),
+                                )
+                        }))
+                        .into_any_element()
+                })
+        })
         .child(
             h_flex()
                 .px_4()

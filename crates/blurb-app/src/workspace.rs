@@ -11,7 +11,8 @@ use crate::persist::{ProjectStore, SessionMeta};
 use crate::settings::Settings;
 use crate::transcript::Transcript;
 use harness_core::config::RunProfile;
-use harness_core::{SessionCommand, SessionEvent, SessionHandle, SessionJournal};
+use harness_core::types::{InteractionReply, PermissionDecision};
+use harness_core::{SessionCommand, SessionEvent, SessionHandle, SessionJournal, SessionOptions};
 use harness_git::{GitRepo, RepoSnapshot, WorktreeManager};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -85,6 +86,7 @@ impl Workspace {
                 .map(|j| {
                     let mut t = Transcript::from_messages(&j.messages, j.usage, j.turns);
                     t.memory_count = j.memory.notes.len();
+                    t.todos = j.todos;
                     t
                 })
                 .unwrap_or_default();
@@ -93,8 +95,7 @@ impl Workspace {
                 meta.title.clone(),
                 cwd,
                 profile.clone(),
-                Some(journal_path),
-                self.settings.max_turns_per_run,
+                self.session_options(Some(journal_path)),
             );
             self.sessions.push(SessionState {
                 handle,
@@ -105,6 +106,14 @@ impl Workspace {
         }
         if !self.sessions.is_empty() {
             self.active_session = Some(self.sessions.len() - 1);
+        }
+    }
+
+    fn session_options(&self, journal: Option<std::path::PathBuf>) -> SessionOptions {
+        SessionOptions {
+            journal,
+            max_turns_per_run: self.settings.max_turns_per_run,
+            permissions: self.settings.permissions.clone(),
         }
     }
 
@@ -146,14 +155,9 @@ impl Workspace {
             cwd: cwd.clone(),
         });
         self.store.save();
-        let handle = SessionHandle::spawn(
-            id,
-            title.to_string(),
-            cwd,
-            provider,
-            Some(self.store.journal_path(id)),
-            self.settings.max_turns_per_run,
-        );
+        let journal = Some(self.store.journal_path(id));
+        let handle =
+            SessionHandle::spawn(id, title.to_string(), cwd, provider, self.session_options(journal));
         self.sessions.push(SessionState {
             handle,
             transcript: Transcript::default(),
@@ -183,6 +187,51 @@ impl Workspace {
     pub fn switch_session_profile(&mut self, session: usize, profile: RunProfile) {
         if let Some(s) = self.sessions.get(session) {
             s.handle.send(SessionCommand::SetProfile(profile));
+        }
+    }
+
+    /// Answer the agent's pending question. Returns true if delivered.
+    pub fn answer_question(&mut self, session: usize, id: u64, text: &str) -> bool {
+        let Some(s) = self.sessions.get_mut(session) else { return false };
+        s.handle.respond(id, InteractionReply::Answer(text.to_string()));
+        s.transcript.record_answer(id, text);
+        true
+    }
+
+    /// Decide a pending permission request. Returns the (tool, summary)
+    /// pair so the caller can persist AllowAlways decisions into settings.
+    pub fn respond_permission(
+        &mut self,
+        session: usize,
+        id: u64,
+        decision: PermissionDecision,
+    ) -> Option<(String, String)> {
+        let s = self.sessions.get_mut(session)?;
+        let subject = s.transcript.permission_subject(id);
+        s.handle.respond(id, InteractionReply::Permission(decision));
+        s.transcript.record_decision(
+            id,
+            match decision {
+                PermissionDecision::Allow => "allowed",
+                PermissionDecision::AllowAlways => "always allowed",
+                PermissionDecision::Deny => "denied",
+            },
+        );
+        subject
+    }
+
+    /// The active question awaiting an answer in a session, if any.
+    pub fn pending_question(&self, session: usize) -> Option<u64> {
+        self.sessions.get(session).and_then(|s| s.transcript.pending_question)
+    }
+
+    /// Rename a session (auto-titling or user edit) in the handle and the
+    /// persisted metadata.
+    pub fn rename_session(&mut self, session: usize, title: &str) {
+        if let Some(s) = self.sessions.get_mut(session) {
+            s.handle.title = title.to_string();
+            self.store.update_title(s.handle.id, title);
+            self.store.save();
         }
     }
 

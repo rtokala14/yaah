@@ -263,6 +263,51 @@ impl ProviderConfig {
     }
 }
 
+/// What the agent may do without asking the human first. Read-only tools
+/// (read/grep/glob/remember/recall/todo) are always allowed; this governs
+/// the mutating surface: file edits and shell commands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionPolicy {
+    /// Master switch: false = allow everything without asking.
+    #[serde(default = "default_true")]
+    pub ask: bool,
+    /// Pre-approve write/edit tool calls.
+    #[serde(default)]
+    pub allow_edits: bool,
+    /// Pre-approved shell commands: a bare word matches the program
+    /// ("cargo" allows any cargo invocation); an entry with spaces is a
+    /// prefix ("git status" allows exactly that family).
+    #[serde(default)]
+    pub allowed_bash: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for PermissionPolicy {
+    fn default() -> Self {
+        Self { ask: true, allow_edits: false, allowed_bash: Vec::new() }
+    }
+}
+
+impl PermissionPolicy {
+    pub fn bash_allowed(&self, command: &str) -> bool {
+        let command = command.trim();
+        let program = command.split_whitespace().next().unwrap_or("");
+        self.allowed_bash.iter().any(|entry| {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                false
+            } else if entry.contains(' ') {
+                command == entry || command.starts_with(&format!("{entry} "))
+            } else {
+                program == entry
+            }
+        })
+    }
+}
+
 /// The flat, resolved (provider + model) profile the adapters and session
 /// threads consume. Built via `ProviderConfig::resolve`; `extra_body` here
 /// is already the provider∪model merge.
@@ -378,6 +423,22 @@ mod tests {
         p.normalize();
         assert_eq!(p.models.len(), 1);
         assert_eq!(p.active_model, 0);
+    }
+
+    #[test]
+    fn bash_allowlist_matches_programs_and_prefixes() {
+        let policy = PermissionPolicy {
+            ask: true,
+            allow_edits: false,
+            allowed_bash: vec!["cargo".into(), "git status".into()],
+        };
+        assert!(policy.bash_allowed("cargo test -p harness-core"));
+        assert!(policy.bash_allowed("  cargo build"));
+        assert!(policy.bash_allowed("git status"));
+        assert!(policy.bash_allowed("git status --short"));
+        assert!(!policy.bash_allowed("git push origin main"));
+        assert!(!policy.bash_allowed("cargotruck run"));
+        assert!(!policy.bash_allowed("rm -rf /"));
     }
 
     #[test]

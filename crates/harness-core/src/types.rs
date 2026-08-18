@@ -109,25 +109,109 @@ pub struct SessionMemory {
     pub summaries: Vec<String>,
 }
 
+/// One item in the session's todo list (the `todo_write` tool replaces the
+/// whole list; the UI renders it live).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoItem {
+    pub text: String,
+    #[serde(default)]
+    pub status: TodoStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    #[default]
+    Pending,
+    InProgress,
+    Done,
+}
+
+// ---------------------------------------------------------------------------
+// Host interaction: how the agent asks a human something mid-run.
+
+/// A request the agent sends to whoever is hosting it (the UI). The host
+/// assigns the correlation id.
+#[derive(Debug, Clone)]
+pub enum InteractionRequest {
+    /// Approve or deny a gated tool call before it runs.
+    Permission { tool: String, summary: String },
+    /// A free-form question, optionally with suggested options.
+    Question { question: String, options: Vec<String> },
+}
+
+/// The host's reply.
+#[derive(Debug, Clone)]
+pub enum InteractionReply {
+    Permission(PermissionDecision),
+    Answer(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionDecision {
+    /// Allow this one call.
+    Allow,
+    /// Allow this call and pre-approve its kind for the rest of the session
+    /// (the host may also persist it into settings).
+    AllowAlways,
+    Deny,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum InteractionError {
+    #[error("cancelled")]
+    Cancelled,
+    #[error("no interactive host attached")]
+    Unavailable,
+}
+
+/// Implemented by the session host. `ask` blocks the calling (session)
+/// thread until the human answers or the run is cancelled.
+pub trait InteractionHandler: Send + Sync {
+    fn ask(&self, req: InteractionRequest) -> Result<InteractionReply, InteractionError>;
+}
+
+/// Headless default: every interaction fails as unavailable (gated tools
+/// get denied, ask_user returns an error the model can act on).
+pub struct NoInteraction;
+impl InteractionHandler for NoInteraction {
+    fn ask(&self, _req: InteractionRequest) -> Result<InteractionReply, InteractionError> {
+        Err(InteractionError::Unavailable)
+    }
+}
+
 /// Shared per-session tool state. `read_files` maps canonical path -> mtime
 /// (as nanos) at last read, for edit staleness checks. `memory` is the
 /// single source of truth for durable session memory — `remember` writes
 /// it, `recall` searches it, the agent persists it and injects digests at
-/// compaction.
+/// compaction. `todos` is the live task list (`todo_write` replaces it).
+/// `interaction` reaches the human on the other side of the session.
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancel: CancelToken,
     pub read_files: Mutex<HashMap<PathBuf, u128>>,
     pub memory: Mutex<SessionMemory>,
+    pub todos: Mutex<Vec<TodoItem>>,
+    pub interaction: std::sync::Arc<dyn InteractionHandler>,
 }
 
 impl ToolContext {
     pub fn new(cwd: PathBuf, cancel: CancelToken) -> Self {
+        Self::with_interaction(cwd, cancel, std::sync::Arc::new(NoInteraction))
+    }
+
+    pub fn with_interaction(
+        cwd: PathBuf,
+        cancel: CancelToken,
+        interaction: std::sync::Arc<dyn InteractionHandler>,
+    ) -> Self {
         Self {
             cwd,
             cancel,
             read_files: Mutex::new(HashMap::new()),
             memory: Mutex::new(SessionMemory::default()),
+            todos: Mutex::new(Vec::new()),
+            interaction,
         }
     }
 }
@@ -271,6 +355,8 @@ pub enum AgentEvent {
     Pruned { count: usize },
     /// The agent recorded a durable memory note (via the `remember` tool).
     MemoryNote { text: String },
+    /// The session todo list changed (via the `todo_write` tool).
+    TodosUpdated { todos: Vec<TodoItem> },
     TurnEnd { stop_reason: StopReason, usage: Usage },
     Done { reason: String, final_text: String },
     Error(String),

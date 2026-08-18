@@ -6,6 +6,7 @@
 //! files without running anything, inject a one-time system-note nudge and
 //! continue (deterministic harness gate; no prompt scaffolding).
 
+use crate::config::PermissionPolicy;
 use crate::context::{self, ContextOptions};
 use crate::types::*;
 use serde_json::Value;
@@ -15,6 +16,8 @@ use std::time::Instant;
 
 const MUTATING_TOOLS: &[&str] = &["write", "edit"];
 const VERIFYING_TOOLS: &[&str] = &["bash"];
+/// Tools that require human approval when the policy says ask.
+const GATED_TOOLS: &[&str] = &["write", "edit", "bash"];
 
 pub struct AgentOptions {
     pub provider: Arc<dyn Provider>,
@@ -26,6 +29,8 @@ pub struct AgentOptions {
     pub effort: Option<Effort>,
     pub temperature: Option<f64>,
     pub context: ContextOptions,
+    pub permissions: PermissionPolicy,
+    pub interaction: Arc<dyn InteractionHandler>,
 }
 
 pub struct AgentResult {
@@ -43,6 +48,10 @@ pub struct Agent {
     /// Notes already announced via `MemoryNote` events (memory itself lives
     /// in `tool_ctx.memory`, the single source of truth).
     announced_notes: usize,
+    /// AllowAlways decisions made during this session (the host persists
+    /// them into settings for future sessions; these cover the current one).
+    session_allow_edits: bool,
+    session_allowed_bash: Vec<String>,
     unverified_mutation: bool,
     verify_nudge_used: bool,
 }
@@ -54,13 +63,19 @@ impl Agent {
             .iter()
             .map(|t| (t.def().name.clone(), Arc::clone(t)))
             .collect();
-        let tool_ctx = Arc::new(ToolContext::new(opts.cwd.clone(), cancel));
+        let tool_ctx = Arc::new(ToolContext::with_interaction(
+            opts.cwd.clone(),
+            cancel,
+            Arc::clone(&opts.interaction),
+        ));
         Self {
             opts,
             messages: Vec::new(),
             tools_by_name,
             tool_ctx,
             announced_notes: 0,
+            session_allow_edits: false,
+            session_allowed_bash: Vec::new(),
             unverified_mutation: false,
             verify_nudge_used: false,
         }
@@ -78,6 +93,14 @@ impl Agent {
 
     pub fn memory(&self) -> SessionMemory {
         self.tool_ctx.memory.lock().unwrap().clone()
+    }
+
+    pub fn todos(&self) -> Vec<TodoItem> {
+        self.tool_ctx.todos.lock().unwrap().clone()
+    }
+
+    pub fn restore_todos(&mut self, todos: Vec<TodoItem>) {
+        *self.tool_ctx.todos.lock().unwrap() = todos;
     }
 
     /// Seed durable memory from a persisted journal (session restore).
@@ -281,6 +304,18 @@ impl Agent {
                 let call = &calls[i];
                 emit(AgentEvent::ToolStart { name: call.name.clone(), input: call.input.clone() });
                 let started = Instant::now();
+                // Human gate: mutating tools need approval under the policy.
+                if let Some(denial) = self.permission_gate(call) {
+                    emit(AgentEvent::ToolEnd {
+                        name: call.name.clone(),
+                        output_preview: preview(&denial.content),
+                        is_error: true,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                    });
+                    results[i] = Some(denial);
+                    i += 1;
+                    continue;
+                }
                 let tool = self.tools_by_name.get(&call.name).cloned();
                 let r = run_tool(tool, call, &self.tool_ctx);
                 if MUTATING_TOOLS.contains(&call.name.as_str()) && !r.is_error {
@@ -306,7 +341,67 @@ impl Agent {
             }
             self.announced_notes = memory.notes.len();
         }
+        // Publish the todo list if this batch rewrote it.
+        if calls.iter().any(|c| c.name == "todo_write") {
+            emit(AgentEvent::TodosUpdated { todos: self.tool_ctx.todos.lock().unwrap().clone() });
+        }
         results.into_iter().flatten().collect()
+    }
+
+    /// Returns Some(denial result) when the call may not run. Read-only
+    /// tools never reach this (they execute in the parallel branch).
+    fn permission_gate(&mut self, call: &ToolCallPart) -> Option<ToolResultPart> {
+        if !self.opts.permissions.ask || !GATED_TOOLS.contains(&call.name.as_str()) {
+            return None;
+        }
+        let is_edit = MUTATING_TOOLS.contains(&call.name.as_str());
+        let summary = if call.name == "bash" {
+            call.input.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        } else {
+            call.input.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        };
+        if is_edit && (self.opts.permissions.allow_edits || self.session_allow_edits) {
+            return None;
+        }
+        if call.name == "bash" {
+            let program = summary.split_whitespace().next().unwrap_or("").to_string();
+            if self.opts.permissions.bash_allowed(&summary)
+                || self.session_allowed_bash.contains(&program)
+            {
+                return None;
+            }
+        }
+
+        let deny = |reason: &str| {
+            Some(ToolResultPart {
+                tool_call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                content: reason.to_string(),
+                is_error: true,
+            })
+        };
+        match self.opts.interaction.ask(InteractionRequest::Permission {
+            tool: call.name.clone(),
+            summary: summary.clone(),
+        }) {
+            Ok(InteractionReply::Permission(PermissionDecision::Allow)) => None,
+            Ok(InteractionReply::Permission(PermissionDecision::AllowAlways)) => {
+                if is_edit {
+                    self.session_allow_edits = true;
+                } else if let Some(program) = summary.split_whitespace().next() {
+                    self.session_allowed_bash.push(program.to_string());
+                }
+                None
+            }
+            Ok(InteractionReply::Permission(PermissionDecision::Deny)) => deny(
+                "The user denied permission for this action. Do not retry it unchanged; adjust the approach or ask what they would prefer.",
+            ),
+            Ok(_) => deny("host returned a mismatched reply; action not run"),
+            Err(InteractionError::Cancelled) => deny("interrupted before approval"),
+            Err(InteractionError::Unavailable) => deny(
+                "no interactive user is attached to approve this action; it was not run",
+            ),
+        }
     }
 
     /// Escalation ladder: prune stale → strip stale thinking → force-prune →

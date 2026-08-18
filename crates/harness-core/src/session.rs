@@ -13,7 +13,7 @@
 //! host, not here.
 
 use crate::agent::{Agent, AgentOptions};
-use crate::config::RunProfile;
+use crate::config::{PermissionPolicy, RunProfile};
 use crate::context::ContextOptions;
 use crate::prompt::build_system_prompt;
 use crate::providers;
@@ -22,6 +22,9 @@ use crate::types::*;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug)]
 pub enum SessionCommand {
@@ -41,6 +44,12 @@ pub enum SessionEvent {
     RunFinished { final_text: String, turns: u32, usage: Usage, stop_reason: String },
     /// The session switched provider/model (label for display).
     ProfileChanged { label: String },
+    /// The agent needs approval for a gated tool call. Answer with
+    /// `SessionHandle::respond(id, InteractionReply::Permission(..))`.
+    PermissionRequest { id: u64, tool: String, summary: String },
+    /// The agent asked the user a question. Answer with
+    /// `SessionHandle::respond(id, InteractionReply::Answer(..))`.
+    AskUser { id: u64, question: String, options: Vec<String> },
     Fatal(String),
 }
 
@@ -58,6 +67,59 @@ pub struct SessionJournal {
     /// Durable memory: agent-authored notes + archived compaction summaries.
     #[serde(default)]
     pub memory: SessionMemory,
+    /// The session's live todo list.
+    #[serde(default)]
+    pub todos: Vec<TodoItem>,
+}
+
+/// Host-tunable knobs for a session, separate from the model profile.
+#[derive(Debug, Clone, Default)]
+pub struct SessionOptions {
+    /// Restore from + persist to this journal path.
+    pub journal: Option<PathBuf>,
+    /// Agent-loop turn cap per user message (0 → 1).
+    pub max_turns_per_run: u32,
+    pub permissions: PermissionPolicy,
+}
+
+/// Bridges the agent's blocking `ask` to the host over channels: emits a
+/// SessionEvent carrying a fresh id, then waits (cancel-aware) for the
+/// host's `respond` with that id.
+struct HostInteraction {
+    events: Sender<SessionEvent>,
+    replies: Receiver<(u64, InteractionReply)>,
+    cancel: CancelToken,
+    next_id: AtomicU64,
+}
+
+impl InteractionHandler for HostInteraction {
+    fn ask(&self, req: InteractionRequest) -> Result<InteractionReply, InteractionError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let event = match req {
+            InteractionRequest::Permission { tool, summary } => {
+                SessionEvent::PermissionRequest { id, tool, summary }
+            }
+            InteractionRequest::Question { question, options } => {
+                SessionEvent::AskUser { id, question, options }
+            }
+        };
+        if self.events.send(event).is_err() {
+            return Err(InteractionError::Unavailable);
+        }
+        loop {
+            if self.cancel.is_cancelled() {
+                return Err(InteractionError::Cancelled);
+            }
+            match self.replies.recv_timeout(Duration::from_millis(100)) {
+                Ok((got, reply)) if got == id => return Ok(reply),
+                Ok(_) => continue, // stale reply from an earlier prompt
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    return Err(InteractionError::Unavailable)
+                }
+            }
+        }
+    }
 }
 
 impl SessionJournal {
@@ -86,6 +148,7 @@ pub struct SessionHandle {
     pub cwd: PathBuf,
     commands: Sender<SessionCommand>,
     pub events: Receiver<SessionEvent>,
+    replies: Sender<(u64, InteractionReply)>,
     cancel: CancelToken,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -93,20 +156,17 @@ pub struct SessionHandle {
 impl SessionHandle {
     /// Spawn a session working in `cwd` (typically a git worktree — see
     /// harness-git) against the given resolved provider+model profile.
-    /// When `journal` is set, existing history at that path is restored and
-    /// every run is persisted back to it. `max_turns_per_run` bounds one
-    /// user message's agent loop (sessions themselves are unbounded — the
-    /// context ladder in `context.rs` keeps long ones healthy).
+    /// `SessionOptions` carries persistence, run caps, and permissions.
     pub fn spawn(
         id: u64,
         title: String,
         cwd: PathBuf,
         provider_config: RunProfile,
-        journal: Option<PathBuf>,
-        max_turns_per_run: u32,
+        options: SessionOptions,
     ) -> Self {
         let (cmd_tx, cmd_rx) = unbounded::<SessionCommand>();
         let (ev_tx, ev_rx) = unbounded::<SessionEvent>();
+        let (reply_tx, reply_rx) = unbounded::<(u64, InteractionReply)>();
         let cancel = CancelToken::new();
         let thread_cancel = cancel.clone();
         let thread_cwd = cwd.clone();
@@ -117,8 +177,8 @@ impl SessionHandle {
                 session_thread(
                     thread_cwd,
                     provider_config,
-                    journal,
-                    max_turns_per_run,
+                    options,
+                    reply_rx,
                     cmd_rx,
                     ev_tx,
                     thread_cancel,
@@ -126,7 +186,16 @@ impl SessionHandle {
             })
             .expect("spawn session thread");
 
-        Self { id, title, cwd, commands: cmd_tx, events: ev_rx, cancel, thread: Some(thread) }
+        Self {
+            id,
+            title,
+            cwd,
+            commands: cmd_tx,
+            events: ev_rx,
+            replies: reply_tx,
+            cancel,
+            thread: Some(thread),
+        }
     }
 
     pub fn send(&self, cmd: SessionCommand) {
@@ -134,6 +203,11 @@ impl SessionHandle {
             self.cancel.cancel();
         }
         let _ = self.commands.send(cmd);
+    }
+
+    /// Answer a pending `PermissionRequest` / `AskUser` event.
+    pub fn respond(&self, id: u64, reply: InteractionReply) {
+        let _ = self.replies.send((id, reply));
     }
 }
 
@@ -150,8 +224,8 @@ impl Drop for SessionHandle {
 fn session_thread(
     cwd: PathBuf,
     provider_config: RunProfile,
-    journal_path: Option<PathBuf>,
-    max_turns_per_run: u32,
+    options: SessionOptions,
+    replies: Receiver<(u64, InteractionReply)>,
     commands: Receiver<SessionCommand>,
     events: Sender<SessionEvent>,
     session_cancel: CancelToken,
@@ -167,6 +241,12 @@ fn session_thread(
     let effort = provider_config.effort;
     let temperature = provider_config.temperature;
     let max_tokens = provider_config.max_tokens;
+    let interaction = Arc::new(HostInteraction {
+        events: events.clone(),
+        replies,
+        cancel: session_cancel.clone(),
+        next_id: AtomicU64::new(0),
+    });
 
     // One Agent per session: the transcript persists across user messages.
     let mut agent = Agent::new(
@@ -175,23 +255,27 @@ fn session_thread(
             tools: builtin_tools(),
             system,
             cwd,
-            max_turns: max_turns_per_run.max(1),
+            max_turns: options.max_turns_per_run.max(1),
             max_tokens_per_turn: max_tokens,
             effort,
             temperature,
             context: ContextOptions::for_context_window(provider_config.context_window),
+            permissions: options.permissions,
+            interaction,
         },
         session_cancel.clone(),
     );
 
     // Restore persisted history, if any. Only usage needs carrying over —
     // turn counts are derived from the (restored) message history itself.
+    let journal_path = options.journal;
     let mut session_usage = Usage::default();
     if let Some(path) = &journal_path {
         if let Some(journal) = SessionJournal::load(path) {
             session_usage = journal.usage;
             agent.restore_messages(journal.messages);
             agent.restore_memory(journal.memory);
+            agent.restore_todos(journal.todos);
         }
     }
     let persist = |agent: &Agent, usage: Usage, turns: u32| {
@@ -202,6 +286,7 @@ fn session_thread(
                 usage,
                 turns,
                 memory: agent.memory(),
+                todos: agent.todos(),
             }
             .save(path);
         }
@@ -279,6 +364,7 @@ mod tests {
                 notes: vec!["tests run headless".into()],
                 summaries: vec!["epoch 1 summary".into()],
             },
+            todos: vec![TodoItem { text: "ship it".into(), status: TodoStatus::InProgress }],
         };
         journal.save(&path);
         let loaded = SessionJournal::load(&path).unwrap();
@@ -287,6 +373,8 @@ mod tests {
         assert_eq!(loaded.turns, 1);
         assert_eq!(loaded.memory.notes, vec!["tests run headless".to_string()]);
         assert_eq!(loaded.memory.summaries.len(), 1);
+        assert_eq!(loaded.todos.len(), 1);
+        assert_eq!(loaded.todos[0].status, TodoStatus::InProgress);
 
         // Corrupt file → load returns None instead of panicking.
         std::fs::write(&path, "{not json").unwrap();

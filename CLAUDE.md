@@ -53,6 +53,22 @@ covers architecture, `INDEX-DESIGN.md` the future code index.
   replacement shape is [pinned task][memory digest][summary][verbatim
   tail].
 
+## Interaction model (agent ⇄ human, mid-run)
+
+- `types::InteractionHandler` is how the agent reaches the human: the
+  session thread blocks in `ask()` (cancel-aware 100ms poll) while the UI
+  answers via `SessionHandle::respond(id, reply)` on a dedicated channel —
+  never through the command queue (it's not drained during a run).
+- Permission gate lives in `agent::permission_gate` (write/edit/bash only;
+  read-only tools never gate). `PermissionPolicy` in config.rs: master
+  `ask` switch, `allow_edits`, `allowed_bash` (bare word = program, spaced
+  entry = prefix). AllowAlways = session-scoped in the agent + persisted
+  into settings by the UI. Headless (`NoInteraction`) denies with an
+  actionable message.
+- `ask_user` (blocks for an answer) and `todo_write` (replace-whole-list,
+  live PLAN panel) ride the same plumbing. Typed input answers a pending
+  question instead of starting a new run (`Transcript::pending_question`).
+
 ## Persistence model
 
 - Session **message history** is journaled by the session thread itself

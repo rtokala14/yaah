@@ -12,6 +12,7 @@ use gpui::*;
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::resizable::{h_resizable, resizable_panel, ResizableState};
 use gpui_component::ActiveTheme;
+use harness_core::types::PermissionDecision;
 use harness_git::MergeOutcome;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -171,7 +172,17 @@ impl RootView {
     }
 
     pub fn send_prompt(&mut self, text: String, _window: &mut Window, cx: &mut Context<Self>) {
-        // No session yet: create one named after the prompt.
+        // A pending ask_user question captures the input: typed text is the
+        // answer, not a new task.
+        if let Some(active) = self.workspace.active_session {
+            if let Some(qid) = self.workspace.pending_question(active) {
+                self.workspace.answer_question(active, qid, &text);
+                cx.notify();
+                return;
+            }
+        }
+        // No session yet: create one named after the prompt (auto-titled
+        // properly in the background).
         if self.workspace.active_session.is_none() {
             let title: String = text.chars().take(32).collect();
             let provider = self.workspace.settings.active_profile();
@@ -181,8 +192,79 @@ impl RootView {
             }
         }
         if let Some(active) = self.workspace.active_session {
+            let first_prompt = self.workspace.sessions[active]
+                .transcript
+                .blocks
+                .iter()
+                .all(|b| !matches!(b, crate::transcript::Block::UserMessage { .. }));
             self.workspace.send_prompt(active, &text);
+            if first_prompt {
+                self.auto_title_session(active, text.clone(), cx);
+            }
             self.transcript_scroll.scroll_to_bottom();
+            cx.notify();
+        }
+    }
+
+    /// Name the session after its first task with one cheap model call,
+    /// off-thread; failures keep the placeholder title.
+    fn auto_title_session(&mut self, session: usize, task: String, cx: &mut Context<Self>) {
+        let profile = self.workspace.settings.active_profile();
+        let session_id = self.workspace.sessions[session].handle.id;
+        cx.spawn(async move |this, cx| {
+            let title = cx
+                .background_spawn(async move {
+                    harness_core::providers::generate_title(&profile, &task).unwrap_or_default()
+                })
+                .await;
+            if title.is_empty() {
+                return;
+            }
+            let _ = this.update(cx, |this: &mut Self, cx| {
+                // Sessions may have moved; find by id.
+                if let Some(i) =
+                    this.workspace.sessions.iter().position(|s| s.handle.id == session_id)
+                {
+                    this.workspace.rename_session(i, &title);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Decide a pending permission request; AllowAlways decisions persist
+    /// into settings for future sessions.
+    pub fn permission_decision(
+        &mut self,
+        id: u64,
+        decision: PermissionDecision,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(active) = self.workspace.active_session else { return };
+        let subject = self.workspace.respond_permission(active, id, decision);
+        if decision == PermissionDecision::AllowAlways {
+            if let Some((tool, summary)) = subject {
+                let policy = &mut self.workspace.settings.permissions;
+                if tool == "bash" {
+                    if let Some(program) = summary.split_whitespace().next() {
+                        if !policy.allowed_bash.iter().any(|e| e == program) {
+                            policy.allowed_bash.push(program.to_string());
+                        }
+                    }
+                } else {
+                    policy.allow_edits = true;
+                }
+                let _ = self.workspace.settings.save();
+            }
+        }
+        cx.notify();
+    }
+
+    /// Answer a question via an option button.
+    pub fn answer_question(&mut self, id: u64, text: String, cx: &mut Context<Self>) {
+        if let Some(active) = self.workspace.active_session {
+            self.workspace.answer_question(active, id, &text);
             cx.notify();
         }
     }
@@ -421,6 +503,14 @@ impl RootView {
     pub fn save_settings(&mut self, cx: &mut Context<Self>) {
         let _ = self.workspace.settings.save();
         cx.notify();
+    }
+
+    pub fn remove_allowed_bash(&mut self, index: usize, cx: &mut Context<Self>) {
+        let list = &mut self.workspace.settings.permissions.allowed_bash;
+        if index < list.len() {
+            list.remove(index);
+            self.save_settings(cx);
+        }
     }
 }
 
