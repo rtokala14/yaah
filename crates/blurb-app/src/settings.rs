@@ -9,7 +9,7 @@ use harness_core::config::{ProviderConfig, ProviderKind, RunProfile};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
@@ -22,10 +22,30 @@ pub struct Settings {
     /// Isolate each session in its own git worktree + branch.
     #[serde(default = "default_true")]
     pub sessions_use_worktrees: bool,
+    /// Agent-loop turn cap per user message. Sessions themselves are
+    /// unbounded; this only bounds one run.
+    #[serde(default = "default_max_turns")]
+    pub max_turns_per_run: u32,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_max_turns() -> u32 {
+    250
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            providers: Vec::new(),
+            active_provider: 0,
+            recent_projects: Vec::new(),
+            sessions_use_worktrees: true,
+            max_turns_per_run: default_max_turns(),
+        }
+    }
 }
 
 impl Settings {

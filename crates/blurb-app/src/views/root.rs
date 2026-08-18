@@ -33,6 +33,8 @@ pub struct RootView {
     pub workspace: Workspace,
     pub prompt_input: Entity<InputState>,
     pub commit_input: Entity<InputState>,
+    /// Settings overlay: max agent-loop turns per run.
+    pub max_turns_input: Entity<InputState>,
     pub layout: Entity<ResizableState>,
     pub show_settings: bool,
     /// In-app provider editor state (Some while editing a provider).
@@ -61,9 +63,18 @@ impl RootView {
         });
         let commit_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Commit message"));
+        let max_turns = workspace.settings.max_turns_per_run;
+        let max_turns_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder("250");
+            state.set_value(max_turns.to_string(), window, cx);
+            state
+        });
         let layout = cx.new(|_| ResizableState::default());
 
-        let subscriptions = vec![cx.subscribe_in(&prompt_input, window, Self::on_prompt_event)];
+        let subscriptions = vec![
+            cx.subscribe_in(&prompt_input, window, Self::on_prompt_event),
+            cx.subscribe_in(&max_turns_input, window, Self::on_max_turns_event),
+        ];
 
         // Session event pump: drain crossbeam channels into transcripts.
         cx.spawn(async move |this, cx| {
@@ -110,6 +121,7 @@ impl RootView {
             workspace,
             prompt_input,
             commit_input,
+            max_turns_input,
             layout,
             show_settings: false,
             provider_editor: None,
@@ -118,6 +130,25 @@ impl RootView {
             merge_cleanup: None,
             transcript_scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
+        }
+    }
+
+    fn on_max_turns_event(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let InputEvent::Change = event {
+            if let Ok(n) = input.read(cx).value().trim().parse::<u32>() {
+                let n = n.max(1);
+                if n != self.workspace.settings.max_turns_per_run {
+                    // Applies to sessions spawned from now on.
+                    self.workspace.settings.max_turns_per_run = n;
+                    let _ = self.workspace.settings.save();
+                }
+            }
         }
     }
 

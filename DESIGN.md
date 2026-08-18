@@ -109,8 +109,13 @@ This is the desktop-native answer to what CLI harnesses approximate with
   `SystemNote` messages appended after the cached prefix.
 - Anthropic adapter sets two cache breakpoints (system+tools, last message
   block) so each turn extends the cached prefix.
-- Pruning is batched at a budget threshold to amortize the cache
-  invalidation it causes; compaction (full rebuild) is last resort.
+- Long sessions are first-class: context pressure goes through an
+  escalation ladder (prune stale tool results → strip stale thinking →
+  force-prune → compact), all batched at budget thresholds to amortize
+  the cache invalidation they cause. Compaction — the only lossy step —
+  pins the original task verbatim, keeps a boundary-safe recent tail
+  verbatim, and caps its own summarization request. The budget follows
+  the active model's configured context window.
 
 ## Phase 2: local code index
 

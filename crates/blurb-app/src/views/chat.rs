@@ -168,10 +168,17 @@ fn usage_line(s: &crate::workspace::SessionState) -> String {
     } else {
         0
     };
-    format!(
+    let mut line = format!(
         "{} turns · in {} ({cache_pct}% cached) · out {}",
         s.transcript.turns, prompt_total, u.output_tokens
-    )
+    );
+    if s.transcript.context_budget > 0 {
+        let pct = (s.transcript.context_tokens as f64 / s.transcript.context_budget as f64
+            * 100.)
+            .round() as u64;
+        line.push_str(&format!(" · ctx {pct}%"));
+    }
+    line
 }
 
 fn render_block(

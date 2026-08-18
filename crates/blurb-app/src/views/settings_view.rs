@@ -26,6 +26,7 @@ pub struct ModelRow {
     pub label: Entity<InputState>,
     pub max_tokens: Entity<InputState>,
     pub temperature: Entity<InputState>,
+    pub context_window: Entity<InputState>,
     pub extra_body: Entity<InputState>,
 }
 
@@ -89,6 +90,12 @@ fn model_row(
         temperature: text_input(
             &m.temperature.map(|t| t.to_string()).unwrap_or_default(),
             "temp",
+            window,
+            cx,
+        ),
+        context_window: text_input(
+            &m.context_window.map(|w| w.to_string()).unwrap_or_default(),
+            "ctx window",
             window,
             cx,
         ),
@@ -164,6 +171,14 @@ impl ProviderEditor {
                         .map_err(|_| format!("model {}: temperature must be a number", i + 1))?,
                 )
             };
+            let ctx_text = row.context_window.read(cx).value().trim().to_string();
+            let context_window = if ctx_text.is_empty() {
+                None
+            } else {
+                Some(ctx_text.parse::<u32>().map_err(|_| {
+                    format!("model {}: context window must be a number of tokens", i + 1)
+                })?)
+            };
             let extra_body = form::parse_json_object(&row.extra_body.read(cx).value())
                 .map_err(|e| format!("model {}: {e}", i + 1))?;
             models.push(ModelConfig {
@@ -172,6 +187,7 @@ impl ProviderEditor {
                 effort: row.effort,
                 temperature,
                 max_tokens,
+                context_window,
                 extra_body,
             });
         }
@@ -544,6 +560,18 @@ fn render_list(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement 
                         .child("Click a model to use it for new sessions."),
                 )
                 .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("Max turns/run"),
+                        )
+                        .child(div().w(px(70.)).child(Input::new(&view.max_turns_input))),
+                )
+                .child(
                     Switch::new("worktree-isolation")
                         .checked(worktrees_on)
                         .label("Worktree-isolated sessions")
@@ -708,8 +736,9 @@ fn render_editor(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElemen
                         .child(
                             h_flex()
                                 .gap_2()
-                                .child(div().w(px(110.)).child(Input::new(&row.max_tokens)))
-                                .child(div().w(px(80.)).child(Input::new(&row.temperature)))
+                                .child(div().w(px(100.)).child(Input::new(&row.max_tokens)))
+                                .child(div().w(px(70.)).child(Input::new(&row.temperature)))
+                                .child(div().w(px(100.)).child(Input::new(&row.context_window)))
                                 .child(div().flex_1().child(Input::new(&row.extra_body))),
                         )
                 })),

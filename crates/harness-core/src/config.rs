@@ -51,6 +51,10 @@ pub struct ModelConfig {
     pub temperature: Option<f64>,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    /// The model's context window in tokens; drives the session's context
+    /// budget. None → a conservative default (200k-class assumption).
+    #[serde(default)]
+    pub context_window: Option<u32>,
     /// Extra top-level JSON fields for this model only; merged over the
     /// provider-level `extra_body` (model wins on key collision).
     #[serde(default)]
@@ -65,6 +69,7 @@ impl ModelConfig {
             effort: None,
             temperature: None,
             max_tokens: default_max_tokens(),
+            context_window: None,
             extra_body: Map::new(),
         }
     }
@@ -170,6 +175,7 @@ impl ProviderConfig {
                     effort: self.legacy_effort.take(),
                     temperature: self.legacy_temperature.take(),
                     max_tokens: self.legacy_max_tokens.take().unwrap_or_else(default_max_tokens),
+                    context_window: None,
                     extra_body: Map::new(),
                 },
             );
@@ -209,6 +215,7 @@ impl ProviderConfig {
             effort: model.effort,
             temperature: model.temperature,
             max_tokens: model.max_tokens,
+            context_window: model.context_window,
             extra_headers: self.extra_headers.clone(),
             extra_body,
             supports_reasoning_effort: self.supports_reasoning_effort,
@@ -271,6 +278,7 @@ pub struct RunProfile {
     pub effort: Option<Effort>,
     pub temperature: Option<f64>,
     pub max_tokens: u32,
+    pub context_window: Option<u32>,
     pub extra_headers: Vec<(String, String)>,
     pub extra_body: Map<String, Value>,
     pub supports_reasoning_effort: bool,

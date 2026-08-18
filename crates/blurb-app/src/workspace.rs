@@ -90,6 +90,7 @@ impl Workspace {
                 cwd,
                 profile.clone(),
                 Some(journal_path),
+                self.settings.max_turns_per_run,
             );
             self.sessions.push(SessionState {
                 handle,
@@ -147,6 +148,7 @@ impl Workspace {
             cwd,
             provider,
             Some(self.store.journal_path(id)),
+            self.settings.max_turns_per_run,
         );
         self.sessions.push(SessionState {
             handle,

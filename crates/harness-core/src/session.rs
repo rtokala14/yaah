@@ -91,13 +91,16 @@ impl SessionHandle {
     /// Spawn a session working in `cwd` (typically a git worktree — see
     /// harness-git) against the given resolved provider+model profile.
     /// When `journal` is set, existing history at that path is restored and
-    /// every run is persisted back to it.
+    /// every run is persisted back to it. `max_turns_per_run` bounds one
+    /// user message's agent loop (sessions themselves are unbounded — the
+    /// context ladder in `context.rs` keeps long ones healthy).
     pub fn spawn(
         id: u64,
         title: String,
         cwd: PathBuf,
         provider_config: RunProfile,
         journal: Option<PathBuf>,
+        max_turns_per_run: u32,
     ) -> Self {
         let (cmd_tx, cmd_rx) = unbounded::<SessionCommand>();
         let (ev_tx, ev_rx) = unbounded::<SessionEvent>();
@@ -108,7 +111,15 @@ impl SessionHandle {
         let thread = std::thread::Builder::new()
             .name(format!("session-{id}"))
             .spawn(move || {
-                session_thread(thread_cwd, provider_config, journal, cmd_rx, ev_tx, thread_cancel)
+                session_thread(
+                    thread_cwd,
+                    provider_config,
+                    journal,
+                    max_turns_per_run,
+                    cmd_rx,
+                    ev_tx,
+                    thread_cancel,
+                )
             })
             .expect("spawn session thread");
 
@@ -137,6 +148,7 @@ fn session_thread(
     cwd: PathBuf,
     provider_config: RunProfile,
     journal_path: Option<PathBuf>,
+    max_turns_per_run: u32,
     commands: Receiver<SessionCommand>,
     events: Sender<SessionEvent>,
     session_cancel: CancelToken,
@@ -160,11 +172,11 @@ fn session_thread(
             tools: builtin_tools(),
             system,
             cwd,
-            max_turns: 80,
+            max_turns: max_turns_per_run.max(1),
             max_tokens_per_turn: max_tokens,
             effort,
             temperature,
-            context: ContextOptions::default(),
+            context: ContextOptions::for_context_window(provider_config.context_window),
         },
         session_cancel.clone(),
     );
@@ -201,7 +213,13 @@ fn session_thread(
             }
             SessionCommand::SetProfile(profile) => match providers::build(&profile) {
                 Ok(p) => {
-                    agent.set_profile(p, profile.effort, profile.temperature, profile.max_tokens);
+                    agent.set_profile(
+                        p,
+                        profile.effort,
+                        profile.temperature,
+                        profile.max_tokens,
+                        ContextOptions::for_context_window(profile.context_window),
+                    );
                     let _ = events.send(SessionEvent::ProfileChanged { label: profile.label() });
                 }
                 Err(e) => {

@@ -227,7 +227,10 @@ impl CancelToken {
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
-    TurnStart { turn: u32 },
+    /// A model turn is starting. `context_tokens` is the estimated size of
+    /// the conversation being sent; `budget_tokens` the session's context
+    /// budget — together they let a UI render context pressure.
+    TurnStart { turn: u32, context_tokens: usize, budget_tokens: usize },
     TextDelta(String),
     ThinkingDelta(String),
     ToolStart { name: String, input: Value },

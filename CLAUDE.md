@@ -31,6 +31,22 @@ covers architecture, `INDEX-DESIGN.md` the future code index.
   (`~/.config/blurb/settings.toml`) is persistence, not an interface —
   never build a feature that requires hand-editing it.
 
+## Context model (long sessions are a feature)
+
+- Sessions are unbounded; one run defaults to 250 turns
+  (`Settings::max_turns_per_run`, editable in the settings overlay).
+- `context.rs` escalation ladder, cheapest first: prune stale tool
+  results → strip stale thinking → force-prune (keep only current turn)
+  → compact. Compaction pins the original user task verbatim (unwrapped,
+  never re-wrapped, across repeated compactions), keeps a boundary-safe
+  verbatim tail (`compact_keep_tail`), and middle-truncates its own
+  summarization request against the budget.
+- Budget = 80% of the model's `context_window` (per-model setting),
+  default 160k when unset. `AgentEvent::TurnStart` carries
+  context/budget estimates; the chat header renders `ctx N%`.
+- Tail cuts must never orphan tool results (`safe_tail_start`) — keep it
+  that way or Anthropic requests 400.
+
 ## Persistence model
 
 - Session **message history** is journaled by the session thread itself

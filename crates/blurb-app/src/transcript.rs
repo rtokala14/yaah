@@ -31,6 +31,10 @@ pub struct Transcript {
     pub usage: Usage,
     pub turns: u32,
     pub last_stop: Option<String>,
+    /// Estimated context size of the most recent model request, and the
+    /// session's context budget — for the header's context meter.
+    pub context_tokens: usize,
+    pub context_budget: usize,
 }
 
 impl Transcript {
@@ -137,7 +141,11 @@ impl Transcript {
 
     fn apply_agent(&mut self, ev: &AgentEvent) {
         match ev {
-            AgentEvent::TurnStart { .. } => self.finish_streaming(),
+            AgentEvent::TurnStart { context_tokens, budget_tokens, .. } => {
+                self.context_tokens = *context_tokens;
+                self.context_budget = *budget_tokens;
+                self.finish_streaming();
+            }
             AgentEvent::TextDelta(d) => {
                 if let Some(Block::AssistantText { text, streaming: true }) =
                     self.blocks.last_mut()

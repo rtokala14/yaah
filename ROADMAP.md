@@ -47,6 +47,16 @@ context/cost with discipline instead of vibes.
   journals and transcripts rebuilt from the same messages; a vanished
   worktree falls back to the project root. *(done — this iteration)*
 
+- [x] **Long-session endurance.** Sessions run as long as needed (runs
+  default to 250 turns, editable in-app). Context pressure is handled by
+  an escalation ladder — prune stale tool results → strip stale thinking
+  → force-prune everything re-readable → only then compact. Compaction
+  pins the user's original task verbatim (survives repeated compactions),
+  keeps a boundary-safe recent tail verbatim, and caps its own
+  summarization request so it can't overflow. Per-model `context_window`
+  drives the budget; the chat header shows live context pressure
+  (`ctx N%`). *(done — this iteration)*
+
 ## P1 — what makes it the *best*, not just working
 
 - [x] **Cost/usage meter.** Sessions report cumulative usage (persisted in

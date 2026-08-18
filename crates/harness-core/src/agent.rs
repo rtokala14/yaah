@@ -78,18 +78,21 @@ impl Agent {
 
     /// Swap the provider/model for subsequent turns. The transcript is kept
     /// (the new model sees the full history); the prompt-cache prefix resets,
-    /// which the caller should surface to the user.
+    /// which the caller should surface to the user. The context budget
+    /// follows the new model's window.
     pub fn set_profile(
         &mut self,
         provider: Arc<dyn Provider>,
         effort: Option<Effort>,
         temperature: Option<f64>,
         max_tokens_per_turn: u32,
+        context: ContextOptions,
     ) {
         self.opts.provider = provider;
         self.opts.effort = effort;
         self.opts.temperature = temperature;
         self.opts.max_tokens_per_turn = max_tokens_per_turn;
+        self.opts.context = context;
     }
 
     /// Inject harness-side steering between turns without touching the
@@ -120,7 +123,11 @@ impl Agent {
                 break;
             }
             self.manage_context(emit, cancel);
-            emit(AgentEvent::TurnStart { turn });
+            emit(AgentEvent::TurnStart {
+                turn,
+                context_tokens: context::estimate_tokens(&self.messages),
+                budget_tokens: self.opts.context.budget_tokens,
+            });
 
             let req = ProviderRequest {
                 system: self.opts.system.clone(),
@@ -283,24 +290,44 @@ impl Agent {
         results.into_iter().flatten().collect()
     }
 
+    /// Escalation ladder: prune stale → strip stale thinking → force-prune →
+    /// compact. Each step runs only if the previous ones left the transcript
+    /// over threshold, so cheap lossless steps absorb most of the pressure
+    /// and full cache-rebuilding compaction stays rare even in 250-turn
+    /// sessions.
     fn manage_context(&mut self, emit: &mut dyn FnMut(AgentEvent), cancel: &CancelToken) {
-        let opts = &self.opts.context;
+        let opts = self.opts.context.clone();
+        let over = |tokens: usize, at: f32| tokens as f32 > opts.budget_tokens as f32 * at;
         let mut tokens = context::estimate_tokens(&self.messages);
 
-        if tokens as f32 > opts.budget_tokens as f32 * opts.prune_at {
-            let pruned = context::prune_tool_results(&mut self.messages, opts);
-            if pruned > 0 {
-                emit(AgentEvent::Pruned { count: pruned });
+        if over(tokens, opts.prune_at) {
+            let pruned = context::prune_tool_results(&mut self.messages, &opts);
+            let stripped =
+                context::strip_stale_thinking(&mut self.messages, opts.keep_recent_turns);
+            if pruned + stripped > 0 {
+                emit(AgentEvent::Pruned { count: pruned + stripped });
                 tokens = context::estimate_tokens(&self.messages);
             }
         }
 
-        if tokens as f32 > opts.budget_tokens as f32 * opts.compact_at {
+        if over(tokens, opts.compact_at) {
+            // Before paying for a summary and a full cache rebuild, take
+            // everything the lossless steps can still give.
+            let pruned = context::force_prune_tool_results(&mut self.messages, &opts);
+            let stripped = context::strip_stale_thinking(&mut self.messages, 1);
+            if pruned + stripped > 0 {
+                emit(AgentEvent::Pruned { count: pruned + stripped });
+                tokens = context::estimate_tokens(&self.messages);
+            }
+        }
+
+        if over(tokens, opts.compact_at) {
             emit(AgentEvent::Compaction { before_tokens: tokens });
             match context::compact(
                 self.opts.provider.as_ref(),
                 &self.opts.system,
                 &self.messages,
+                &opts,
                 cancel,
             ) {
                 Ok(replacement) => self.messages = replacement,
