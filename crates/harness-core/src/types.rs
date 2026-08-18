@@ -201,6 +201,9 @@ pub struct ToolContext {
     pub interaction: std::sync::Arc<dyn InteractionHandler>,
     /// Set only on the primary agent's context.
     pub subagent: Mutex<Option<std::sync::Arc<dyn SubagentRunner>>>,
+    /// Pre/post tool-call hooks (run inside `run_tool`, so parallel
+    /// batches get them too).
+    pub hooks: Vec<crate::hooks::HookConfig>,
 }
 
 impl ToolContext {
@@ -221,6 +224,7 @@ impl ToolContext {
             todos: Mutex::new(Vec::new()),
             interaction,
             subagent: Mutex::new(None),
+            hooks: Vec::new(),
         }
     }
 }

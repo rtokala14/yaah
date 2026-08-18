@@ -775,6 +775,81 @@ fn render_list(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement 
                         .child("Servers connect for new sessions; their tools appear as mcp_<server>_<tool> and require approval."),
                 )
         })
+        // Hooks
+        .child({
+            let hooks = view.workspace.settings.hooks.clone();
+            let event_post = view.hook_event_post;
+            v_flex()
+                .px_4()
+                .py_3()
+                .gap_2()
+                .border_t_1()
+                .border_color(theme.border)
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.muted_foreground)
+                        .child("HOOKS"),
+                )
+                .when(!hooks.is_empty(), |this| {
+                    this.child(h_flex().gap_1().flex_wrap().children(
+                        hooks.into_iter().enumerate().map(|(k, h)| {
+                            let event = match h.event {
+                                harness_core::hooks::HookEvent::Pre => "pre",
+                                harness_core::hooks::HookEvent::Post => "post",
+                            };
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .px_1p5()
+                                .rounded(theme.radius)
+                                .bg(theme.muted)
+                                .text_xs()
+                                .child(format!("{} · {event} {} · {}", h.name, h.tools, h.command))
+                                .child(
+                                    Button::new(("rm-hook", k))
+                                        .icon(IconName::Close)
+                                        .ghost()
+                                        .xsmall()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.remove_hook(k, cx)
+                                        })),
+                                )
+                        }),
+                    ))
+                })
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().w(px(90.)).child(Input::new(&view.hook_name_input)))
+                        .child(
+                            Button::new("hook-event")
+                                .label(if event_post { "post" } else { "pre" })
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_hook_event(cx))),
+                        )
+                        .child(div().w(px(130.)).child(Input::new(&view.hook_tools_input)))
+                        .child(div().flex_1().child(Input::new(&view.hook_command_input)))
+                        .child(
+                            Button::new("add-hook")
+                                .icon(IconName::Plus)
+                                .label("Add")
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.add_hook(window, cx)
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child("pre hooks block the call on non-zero exit; post hooks append their output as feedback (lint-on-edit). Project hooks: .blurb/hooks.json."),
+                )
+        })
         .child(
             h_flex()
                 .px_4()

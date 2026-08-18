@@ -88,6 +88,9 @@ pub struct SessionOptions {
     pub mcp_servers: Vec<crate::mcp::McpServerConfig>,
     /// Inject a token-budgeted repo map into the (cached) system prompt.
     pub inject_repo_map: bool,
+    /// Host-configured hooks; project hooks (`.blurb/hooks.json`) are
+    /// discovered and appended automatically.
+    pub hooks: Vec<crate::hooks::HookConfig>,
 }
 
 /// Bridges the agent's blocking `ask` to the host over channels: emits a
@@ -291,6 +294,10 @@ fn session_thread(
         next_id: AtomicU64::new(0),
     });
 
+    // Hooks: host-configured plus the project's own.
+    let mut hooks = options.hooks.clone();
+    hooks.extend(crate::hooks::load_project_hooks(&cwd));
+
     // One Agent per session: the transcript persists across user messages.
     let mut agent = Agent::new(
         AgentOptions {
@@ -305,6 +312,7 @@ fn session_thread(
             context: ContextOptions::for_context_window(provider_config.context_window),
             permissions: options.permissions,
             interaction,
+            hooks,
         },
         session_cancel.clone(),
     );

@@ -31,6 +31,7 @@ pub struct AgentOptions {
     pub context: ContextOptions,
     pub permissions: PermissionPolicy,
     pub interaction: Arc<dyn InteractionHandler>,
+    pub hooks: Vec<crate::hooks::HookConfig>,
 }
 
 pub struct AgentResult {
@@ -64,11 +65,10 @@ impl Agent {
             .iter()
             .map(|t| (t.def().name.clone(), Arc::clone(t)))
             .collect();
-        let tool_ctx = Arc::new(ToolContext::with_interaction(
-            opts.cwd.clone(),
-            cancel,
-            Arc::clone(&opts.interaction),
-        ));
+        let mut tool_ctx =
+            ToolContext::with_interaction(opts.cwd.clone(), cancel, Arc::clone(&opts.interaction));
+        tool_ctx.hooks = opts.hooks.clone();
+        let tool_ctx = Arc::new(tool_ctx);
         // Install the nested-agent runner (primary agents only — nested
         // toolsets exclude the subagent tool, so recursion cannot occur).
         *tool_ctx.subagent.lock().unwrap() = Some(Arc::new(NestedRunner {
@@ -534,6 +534,7 @@ impl SubagentRunner for NestedRunner {
                     ..Default::default()
                 },
                 interaction: Arc::new(NoInteraction),
+                hooks: Vec::new(), // hooks target mutations; explorers have none
             },
             cancel.clone(),
         );
@@ -550,16 +551,49 @@ fn run_tool(
     call: &ToolCallPart,
     ctx: &ToolContext,
 ) -> ToolResultPart {
+    use crate::hooks::{run_hook, HookEvent};
+
+    // Pre hooks: any failing hook blocks the call; its output is the error
+    // result the model sees.
+    for hook in ctx.hooks.iter().filter(|h| h.matches(HookEvent::Pre, &call.name)) {
+        let outcome = run_hook(hook, &call.name, &call.input, None, &ctx.cwd);
+        if !outcome.success {
+            return ToolResultPart {
+                tool_call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                content: format!(
+                    "[hook \"{}\"] blocked this call:\n{}",
+                    hook.name,
+                    if outcome.output.is_empty() { "(no output)" } else { &outcome.output }
+                ),
+                is_error: true,
+            };
+        }
+    }
+
     let output = match tool {
         Some(t) => t.execute(&call.input, ctx),
         None => ToolOutput::err(format!("unknown tool: {}", call.name)),
     };
-    ToolResultPart {
+    let mut result = ToolResultPart {
         tool_call_id: call.id.clone(),
         tool_name: call.name.clone(),
         content: output.content,
         is_error: output.is_error,
+    };
+
+    // Post hooks: a failing hook appends feedback (lint-on-edit) — the
+    // tool's own result stands, the model sees the problems immediately.
+    for hook in ctx.hooks.iter().filter(|h| h.matches(HookEvent::Post, &call.name)) {
+        let outcome = run_hook(hook, &call.name, &call.input, Some(&result.content), &ctx.cwd);
+        if !outcome.success && !outcome.output.is_empty() {
+            result.content.push_str(&format!(
+                "\n\n[hook \"{}\" reported problems — address them]:\n{}",
+                hook.name, outcome.output
+            ));
+        }
     }
+    result
 }
 
 fn preview(s: &str) -> String {

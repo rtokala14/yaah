@@ -35,6 +35,10 @@ pub struct Settings {
     /// Inject a token-budgeted repo map into each session's system prompt.
     #[serde(default = "default_true")]
     pub inject_repo_map: bool,
+    /// Pre/post tool-call hooks applied to every session (project hooks in
+    /// `.blurb/hooks.json` add to these).
+    #[serde(default)]
+    pub hooks: Vec<harness_core::hooks::HookConfig>,
 }
 
 fn default_true() -> bool {
@@ -56,6 +60,7 @@ impl Default for Settings {
             permissions: PermissionPolicy::default(),
             mcp_servers: Vec::new(),
             inject_repo_map: true,
+            hooks: Vec::new(),
         }
     }
 }

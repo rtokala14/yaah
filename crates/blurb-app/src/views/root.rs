@@ -39,6 +39,12 @@ pub struct RootView {
     /// Settings overlay: new-MCP-server form.
     pub mcp_name_input: Entity<InputState>,
     pub mcp_command_input: Entity<InputState>,
+    /// Settings overlay: new-hook form.
+    pub hook_name_input: Entity<InputState>,
+    pub hook_tools_input: Entity<InputState>,
+    pub hook_command_input: Entity<InputState>,
+    /// New-hook form: true = post (lint-on-edit), false = pre (blocker).
+    pub hook_event_post: bool,
     pub layout: Entity<ResizableState>,
     pub show_settings: bool,
     /// In-app provider editor state (Some while editing a provider).
@@ -76,6 +82,11 @@ impl RootView {
         let mcp_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("name"));
         let mcp_command_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("command (e.g. npx -y some-mcp)"));
+        let hook_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("name"));
+        let hook_tools_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("tools (e.g. edit,write or *)"));
+        let hook_command_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("shell command"));
         let layout = cx.new(|_| ResizableState::default());
 
         let subscriptions = vec![
@@ -131,6 +142,10 @@ impl RootView {
             max_turns_input,
             mcp_name_input,
             mcp_command_input,
+            hook_name_input,
+            hook_tools_input,
+            hook_command_input,
+            hook_event_post: true,
             layout,
             show_settings: false,
             provider_editor: None,
@@ -547,6 +562,41 @@ impl RootView {
             servers.remove(index);
             self.save_settings(cx);
         }
+    }
+
+    pub fn add_hook(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use harness_core::hooks::{HookConfig, HookEvent};
+        let name = self.hook_name_input.read(cx).value().trim().to_string();
+        let tools = self.hook_tools_input.read(cx).value().trim().to_string();
+        let command = self.hook_command_input.read(cx).value().trim().to_string();
+        if name.is_empty() || tools.is_empty() || command.is_empty() {
+            return;
+        }
+        let hooks = &mut self.workspace.settings.hooks;
+        hooks.retain(|h| h.name != name);
+        hooks.push(HookConfig {
+            name,
+            event: if self.hook_event_post { HookEvent::Post } else { HookEvent::Pre },
+            tools,
+            command,
+        });
+        for input in [&self.hook_name_input, &self.hook_tools_input, &self.hook_command_input] {
+            input.update(cx, |s, cx| s.set_value("", window, cx));
+        }
+        self.save_settings(cx);
+    }
+
+    pub fn remove_hook(&mut self, index: usize, cx: &mut Context<Self>) {
+        let hooks = &mut self.workspace.settings.hooks;
+        if index < hooks.len() {
+            hooks.remove(index);
+            self.save_settings(cx);
+        }
+    }
+
+    pub fn toggle_hook_event(&mut self, cx: &mut Context<Self>) {
+        self.hook_event_post = !self.hook_event_post;
+        cx.notify();
     }
 }
 
