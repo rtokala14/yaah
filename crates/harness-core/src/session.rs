@@ -86,6 +86,8 @@ pub struct SessionOptions {
     /// MCP servers to connect for this session (their tools join the
     /// registry as `mcp_<server>_<tool>`, permission-gated).
     pub mcp_servers: Vec<crate::mcp::McpServerConfig>,
+    /// Inject a token-budgeted repo map into the (cached) system prompt.
+    pub inject_repo_map: bool,
 }
 
 /// Bridges the agent's blocking `ask` to the host over channels: emits a
@@ -261,6 +263,23 @@ fn session_thread(
         let _ = events.send(SessionEvent::Agent(AgentEvent::Error(format!(
             "MCP server unavailable — {e}"
         ))));
+    }
+    // Code index: one build per session; index tools always join (they
+    // degrade gracefully), the repo map lands in the cached prefix.
+    {
+        use harness_index::CodeIndex;
+        let index: Arc<dyn CodeIndex> = Arc::new(harness_index::RegexIndex::build(&cwd));
+        if options.inject_repo_map {
+            if let Ok(map) = index.repo_map(2000) {
+                if !map.is_empty() {
+                    system.push_str("\n\n# Repo map\nKey definitions by file (ranked by cross-file references; not exhaustive — use symbols/refs/outline/grep for anything else):\n");
+                    system.push_str(&map);
+                }
+            }
+        }
+        tools.push(Arc::new(crate::tools::index_tools::SymbolsTool::new(Arc::clone(&index))));
+        tools.push(Arc::new(crate::tools::index_tools::RefsTool::new(Arc::clone(&index))));
+        tools.push(Arc::new(crate::tools::index_tools::OutlineTool::new(index)));
     }
     let effort = provider_config.effort;
     let temperature = provider_config.temperature;

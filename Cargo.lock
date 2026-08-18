@@ -2818,6 +2818,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "globset",
+ "harness-index",
  "ignore",
  "log",
  "regex",
@@ -2842,7 +2843,10 @@ dependencies = [
 name = "harness-index"
 version = "0.1.0"
 dependencies = [
+ "ignore",
+ "regex",
  "serde",
+ "tempfile",
  "thiserror 2.0.20",
 ]
 

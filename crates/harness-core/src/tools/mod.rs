@@ -15,6 +15,7 @@ mod edit;
 mod fsutil;
 mod glob_tool;
 mod grep;
+pub mod index_tools;
 mod read;
 mod recall;
 mod remember;

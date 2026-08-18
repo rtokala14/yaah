@@ -32,6 +32,9 @@ pub struct Settings {
     /// MCP servers connected to every new session.
     #[serde(default)]
     pub mcp_servers: Vec<harness_core::mcp::McpServerConfig>,
+    /// Inject a token-budgeted repo map into each session's system prompt.
+    #[serde(default = "default_true")]
+    pub inject_repo_map: bool,
 }
 
 fn default_true() -> bool {
@@ -52,6 +55,7 @@ impl Default for Settings {
             max_turns_per_run: default_max_turns(),
             permissions: PermissionPolicy::default(),
             mcp_servers: Vec::new(),
+            inject_repo_map: true,
         }
     }
 }

@@ -802,13 +802,27 @@ fn render_list(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement 
                         .child(div().w(px(70.)).child(Input::new(&view.max_turns_input))),
                 )
                 .child(
-                    Switch::new("worktree-isolation")
-                        .checked(worktrees_on)
-                        .label("Worktree-isolated sessions")
-                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                            this.workspace.settings.sessions_use_worktrees = *checked;
-                            this.save_settings(cx);
-                        })),
+                    h_flex()
+                        .gap_4()
+                        .items_center()
+                        .child(
+                            Switch::new("repo-map")
+                                .checked(view.workspace.settings.inject_repo_map)
+                                .label("Repo map in prompt")
+                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    this.workspace.settings.inject_repo_map = *checked;
+                                    this.save_settings(cx);
+                                })),
+                        )
+                        .child(
+                            Switch::new("worktree-isolation")
+                                .checked(worktrees_on)
+                                .label("Worktree-isolated sessions")
+                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    this.workspace.settings.sessions_use_worktrees = *checked;
+                                    this.save_settings(cx);
+                                })),
+                        ),
                 ),
         )
 }

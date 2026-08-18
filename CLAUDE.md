@@ -11,7 +11,7 @@ covers architecture, `INDEX-DESIGN.md` the future code index.
 |---|---|---|
 | `harness-core` | providers, tools, agent loop, context mgmt, session threads | **no UI deps, no tokio** — synchronous by design, tests run headless |
 | `harness-git` | libgit2: status/diff/commit/worktrees/log-graph/merge | no UI deps, tests headless |
-| `harness-index` | code-index trait + NullIndex (phase 2) | no UI deps |
+| `harness-index` | code-index trait + phase-1 `RegexIndex` (symbols/refs/outline/repo-map) | no UI deps |
 | `blurb-app` | the GPUI app | only crate allowed to touch gpui |
 
 ## Provider model (v2 — multi-model)
@@ -68,6 +68,23 @@ covers architecture, `INDEX-DESIGN.md` the future code index.
 - `ask_user` (blocks for an answer) and `todo_write` (replace-whole-list,
   live PLAN panel) ride the same plumbing. Typed input answers a pending
   question instead of starting a new run (`Transcript::pending_question`).
+
+## Extensibility surfaces
+
+- **Skills**: markdown packs in `<repo>/.blurb/skills/` (project) and
+  `~/.config/blurb/skills/` (global; project shadows). Names+descriptions
+  live in the cached prompt; the `skill` tool loads bodies on demand.
+- **MCP**: stdio servers in settings (`mcp.rs` — newline JSON-RPC,
+  reader thread, serial id-matched requests). Tools appear as
+  `mcp_<server>_<tool>` and are permission-gated; AllowAlways persists
+  the exact tool name into `PermissionPolicy::allowed_tools`.
+- **Sub-agents**: `subagent` tool → `NestedRunner` in agent.rs builds a
+  fresh Agent with `nested_toolset` (read-only, minus subagent/todo/
+  remember). read_only=true ⇒ parallel fan-out for free. Nested contexts
+  get no runner, so recursion fails closed.
+- **Index**: `RegexIndex::build` runs once per session thread;
+  `symbols`/`refs`/`outline` tools always join; the 2k-token repo map is
+  appended to the system prompt when `inject_repo_map` is on.
 
 ## Persistence model
 

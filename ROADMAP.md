@@ -111,8 +111,10 @@ context/cost with discipline instead of vibes.
   pending/in_progress/done) renders as a live PLAN panel in the chat pane,
   persists in the journal, and restores with the session.
   *(done — this iteration)*
-- [ ] **Model catalog fetch.** "Fetch models" button per provider: query
-  `/v1/models` (OpenAI-compat) / Anthropic models endpoint, one-click add.
+- [x] **Model catalog fetch.** "Fetch models" in the provider editor
+  queries the endpoint's catalog (Anthropic + OpenAI-compatible) with the
+  current form values; returned ids render as click-to-add chips.
+  *(done — this iteration)*
 - [x] **Session titles that mean something.** Sessions auto-title from
   their first prompt with one cheap low-effort model call (sanitized,
   background, failure keeps the placeholder). *(done — this iteration)*
@@ -120,13 +122,27 @@ context/cost with discipline instead of vibes.
 
 ## P2 — compounding advantages
 
-- [ ] **Code index, phase 1** (see INDEX-DESIGN.md): tree-sitter symbol
-  layer + trigram-accelerated grep + PageRank repo map injected in the
-  cached prefix. Structure first, embeddings never (until proven needed).
-- [ ] **Sub-agents.** Spawn read-only explorer agents from the main loop
-  (parallel worktree-free sessions), results folded into context.
-- [ ] **MCP client.** Connect stdio MCP servers per project; tools join the
-  registry with the same permission model.
+- [x] **Code index, phase 1.** `harness-index::RegexIndex`: one
+  gitignore-aware walk, per-language regex symbol extraction (rust, py,
+  ts/js, go), identifier→files inverted map. Powers `symbols` / `refs` /
+  `outline` tools and a token-budgeted repo map (ranked by cross-file
+  mentions) injected into the cached system prompt (toggleable in
+  settings). *(done — this iteration)* Phase 2 stays open: tree-sitter
+  precision, trigram-accelerated grep, PageRank ranking, watcher-driven
+  incremental updates, per-worktree overlays (INDEX-DESIGN.md).
+- [x] **Sub-agents.** The `subagent` tool spawns read-only explorer agents
+  with fresh contexts; several calls in one turn fan out in parallel via
+  the existing tool threads; only final reports return. Recursion fails
+  closed. *(done — this iteration)*
+- [x] **MCP client.** Stdio JSON-RPC servers configured in settings connect
+  per session; their tools join the registry as `mcp_<server>_<tool>`,
+  permission-gated with per-tool AllowAlways persistence.
+  *(done — this iteration)* Still open: HTTP/SSE transports, resources
+  and prompts (tools only today).
+- [x] **Skills.** Global (`~/.config/blurb/skills/`) + project
+  (`.blurb/skills/`) markdown packs, project shadowing global; listed in
+  the cache-stable prompt, full body loaded on demand via the `skill`
+  tool. *(done — this iteration)*
 - [ ] **Hooks.** Pre/post tool-call hooks (lint-on-edit, test-on-done),
   configured per project in-app.
 - [ ] **Plan mode.** Read-only exploration turn producing an approvable

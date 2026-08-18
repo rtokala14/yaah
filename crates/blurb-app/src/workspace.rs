@@ -116,6 +116,7 @@ impl Workspace {
             permissions: self.settings.permissions.clone(),
             skills_global_dir: dirs::config_dir().map(|d| d.join("blurb").join("skills")),
             mcp_servers: self.settings.mcp_servers.clone(),
+            inject_repo_map: self.settings.inject_repo_map,
         }
     }
 

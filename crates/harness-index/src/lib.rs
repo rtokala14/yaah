@@ -11,6 +11,9 @@
 //! and to the harness as a *context primer* (a compact repo map injected
 //! once per session, aider-style). Both consume this trait.
 
+pub mod scan;
+pub use scan::RegexIndex;
+
 use serde::Serialize;
 use std::path::PathBuf;
 

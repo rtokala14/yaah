@@ -7,6 +7,11 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+regex.workspace = true
+ignore.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
 
 # Planned (phase 2 — see INDEX-DESIGN.md):
 # tree-sitter = "0.24" + per-language grammars (symbol extraction)
