@@ -250,9 +250,10 @@ fn session_thread(
         }
     };
     let mut system = build_system_prompt(&cwd);
-    // Code index first: it accelerates grep and primes the prompt.
+    // Code index first: it accelerates grep and primes the prompt. Shared
+    // per root — sessions on the same checkout converge on one live index.
     let index: Arc<dyn harness_index::CodeIndex> =
-        Arc::new(harness_index::RegexIndex::build(&cwd));
+        harness_index::registry::shared_index(&cwd);
     // Skills: listed in the (cache-stable) prompt, loaded on demand.
     let skills = crate::skills::discover(&cwd, options.skills_global_dir.as_deref());
     let mut tools = crate::tools::builtin_tools_with_index(Some(Arc::clone(&index)));

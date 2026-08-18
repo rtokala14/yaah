@@ -17,8 +17,13 @@ use std::time::{Duration, Instant};
 /// bounded on large repos; skipped files simply don't contribute.
 const MAX_FILE_BYTES: u64 = 512 * 1024;
 const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
-/// Lazy queries revalidate at most this often; `refresh_now` always does.
+/// Watcher-less fallback: lazy queries revalidate at most this often.
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(1000);
+/// With a live watcher, revalidate anyway this often (dropped-event net).
+const WATCHER_SAFETY_NET: Duration = Duration::from_secs(60);
+/// Grep-correctness path: how recent a refresh may be to skip re-walking
+/// when the watcher reports clean.
+const CANDIDATE_MAX_AGE: Duration = Duration::from_secs(2);
 /// Identifiers defined in more than this many files are too generic to
 /// contribute reference-graph edges.
 const MAX_DEF_FANOUT: usize = 20;
@@ -211,13 +216,24 @@ struct Inner {
     /// Ranked global view: rank desc, then path, then line.
     symbols: Vec<Symbol>,
     ident_files: HashMap<String, Vec<PathBuf>>,
+    /// How many files DEFINE a symbol of this name — the data-driven
+    /// genericity signal (`fn new` is defined everywhere; `mint_token`
+    /// once). The repo map prefers distinctive names.
+    def_fanout: HashMap<String, usize>,
 }
 
-/// The phase-2 in-memory index: interior-mutable, revalidating.
+/// The live index: interior-mutable, revalidating, watcher-invalidated.
 pub struct RegexIndex {
     root: PathBuf,
     inner: RwLock<Inner>,
     last_refresh: Mutex<Option<Instant>>,
+    /// Set by the fs watcher when something under the root changed; a
+    /// query that sees it refreshes immediately.
+    dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Present while the watcher thread is alive. When the watcher failed
+    /// to start (inotify limits, exotic fs), queries fall back to the
+    /// 1s-debounced stat walk.
+    _watcher: Option<notify::RecommendedWatcher>,
 }
 
 fn file_mtime(meta: &std::fs::Metadata) -> u128 {
@@ -229,6 +245,12 @@ fn file_mtime(meta: &std::fs::Metadata) -> u128 {
 }
 
 fn parse_file(path: &Path, text: &str, by_ext: &HashMap<&str, &LangSpec>) -> Vec<Symbol> {
+    // Precision first: a real syntax tree when a grammar exists (strings
+    // and comments can't fake definitions; methods know their container).
+    if let Some(symbols) = crate::sitter::ts_symbols(path, text) {
+        return symbols;
+    }
+    // Regex fallback for the rest (java/kotlin, c/c++, ruby, …).
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else { return Vec::new() };
     let Some(spec) = by_ext.get(ext) else { return Vec::new() };
     let mut symbols = Vec::new();
@@ -254,12 +276,48 @@ fn parse_file(path: &Path, text: &str, by_ext: &HashMap<&str, &LangSpec>) -> Vec
     symbols
 }
 
+/// Extensions the index cares about — watcher events on other files are
+/// noise and must not trigger refreshes.
+fn indexable_ext(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some(
+            "rs" | "py" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "go" | "java" | "kt" | "kts"
+                | "c" | "h" | "cc" | "cpp" | "hpp" | "cxx" | "rb"
+        )
+    )
+}
+
 impl RegexIndex {
     pub fn build(root: &Path) -> Self {
+        use notify::Watcher;
+        let dirty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watcher_dirty = std::sync::Arc::clone(&dirty);
+        let watcher = notify::recommended_watcher(move |event: Result<notify::Event, _>| {
+            if let Ok(event) = event {
+                // Directory events (renames/creates) matter too; file
+                // events only when the file could be indexed.
+                let relevant = event
+                    .paths
+                    .iter()
+                    .any(|p| indexable_ext(p) || p.extension().is_none());
+                if relevant {
+                    watcher_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        })
+        .ok()
+        .and_then(|mut w| {
+            w.watch(root, notify::RecursiveMode::Recursive).ok()?;
+            Some(w)
+        });
+
         let index = Self {
             root: root.to_path_buf(),
             inner: RwLock::new(Inner::default()),
             last_refresh: Mutex::new(None),
+            dirty,
+            _watcher: watcher,
         };
         index.refresh_now();
         index
@@ -276,21 +334,31 @@ impl RegexIndex {
     /// Revalidate against the filesystem immediately: stat-walk, reparse
     /// changed/new files, drop deleted ones, re-rank if anything moved.
     pub fn refresh_now(&self) {
+        self.dirty.store(false, std::sync::atomic::Ordering::Relaxed);
         self.refresh_inner();
         *self.last_refresh.lock().unwrap() = Some(Instant::now());
     }
 
-    /// Debounced revalidation used by queries.
+    /// Revalidation used by queries. With a live watcher, the dirty flag
+    /// is the trigger (plus a slow safety net in case events were
+    /// dropped); without one, fall back to the debounced stat walk.
     fn refresh_if_stale(&self) {
-        {
-            let last = self.last_refresh.lock().unwrap();
-            if let Some(t) = *last {
-                if t.elapsed() < REFRESH_DEBOUNCE {
-                    return;
-                }
-            }
+        if self.dirty.load(std::sync::atomic::Ordering::Relaxed) {
+            self.refresh_now();
+            return;
         }
-        self.refresh_now();
+        let deadline = if self._watcher.is_some() {
+            WATCHER_SAFETY_NET
+        } else {
+            REFRESH_DEBOUNCE
+        };
+        let stale = match *self.last_refresh.lock().unwrap() {
+            Some(t) => t.elapsed() >= deadline,
+            None => true,
+        };
+        if stale {
+            self.refresh_now();
+        }
     }
 
     fn refresh_inner(&self) {
@@ -376,6 +444,14 @@ fn finalize(inner: &mut Inner) {
             def_map.entry(sym.name.as_str()).or_default().push(idx_of[path]);
         }
     }
+    let def_fanout: HashMap<String, usize> = def_map
+        .iter()
+        .map(|(name, defs)| {
+            let mut files: Vec<usize> = defs.clone();
+            files.dedup();
+            (name.to_string(), files.len())
+        })
+        .collect();
 
     // Reference graph: A mentions a symbol defined in B (A != B) => A -> B.
     let n = paths.len().max(1);
@@ -444,7 +520,28 @@ fn finalize(inner: &mut Inner) {
 
     inner.ident_files = ident_files;
     inner.symbols = symbols;
+    inner.def_fanout = def_fanout;
 }
+
+/// Repo-map preference: types anchor understanding, then free functions;
+/// methods and locals only when space remains.
+fn kind_priority(kind: SymbolKind) -> u8 {
+    match kind {
+        SymbolKind::Struct
+        | SymbolKind::Enum
+        | SymbolKind::Trait
+        | SymbolKind::Interface
+        | SymbolKind::Class => 0,
+        SymbolKind::Module | SymbolKind::TypeAlias => 1,
+        SymbolKind::Function => 2,
+        SymbolKind::Method => 3,
+        SymbolKind::Constant | SymbolKind::Variable => 4,
+    }
+}
+
+/// A name defined in this many files or more is generic boilerplate
+/// (`new`, `default`, `tests`, accessor names) — excluded from the map.
+const GENERIC_DEF_FANOUT: usize = 3;
 
 impl CodeIndex for RegexIndex {
     fn find_symbols(&self, query: &str, limit: usize) -> Result<Vec<Symbol>, IndexError> {
@@ -505,14 +602,24 @@ impl CodeIndex for RegexIndex {
         }
         let mut out = String::new();
         for path in file_order {
+            // Distinctive symbols first: skip names defined all over the
+            // codebase (fn new / mod tests / accessors), lead with types,
+            // keep source order within a priority tier.
+            let mut picks: Vec<&Symbol> = inner
+                .symbols
+                .iter()
+                .filter(|s| &s.file == path)
+                .filter(|s| {
+                    inner.def_fanout.get(&s.name).copied().unwrap_or(1) < GENERIC_DEF_FANOUT
+                })
+                .collect();
+            picks.sort_by_key(|s| (kind_priority(s.kind), s.line));
             let mut section = format!("{}\n", path.display());
-            let mut listed = 0;
-            for s in inner.symbols.iter().filter(|s| &s.file == path) {
-                if listed >= 8 {
-                    break;
-                }
+            for s in picks.into_iter().take(8) {
                 section.push_str(&format!("  {}\n", s.signature));
-                listed += 1;
+            }
+            if section.lines().count() <= 1 {
+                continue; // nothing distinctive to say about this file
             }
             if out.len() + section.len() > budget_chars {
                 break;
@@ -523,8 +630,15 @@ impl CodeIndex for RegexIndex {
     }
 
     fn candidate_files(&self, literal: &str) -> Result<Vec<PathBuf>, IndexError> {
-        // Grep correctness depends on this being current: always refresh.
-        self.refresh_now();
+        // Grep correctness depends on currency. With a clean watcher and a
+        // fresh refresh we can trust the index; otherwise re-walk now.
+        let fresh_enough = self._watcher.is_some()
+            && !self.dirty.load(std::sync::atomic::Ordering::Relaxed)
+            && matches!(*self.last_refresh.lock().unwrap(),
+                Some(t) if t.elapsed() < CANDIDATE_MAX_AGE);
+        if !fresh_enough {
+            self.refresh_now();
+        }
         let inner = self.inner.read().unwrap();
         let idents: Vec<&str> = identifiers(literal).into_iter().collect();
         if idents.is_empty() {
@@ -689,6 +803,41 @@ mod tests {
             .unwrap()
             .iter()
             .any(|r| r.file == PathBuf::from("src/auth.rs")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn watcher_invalidates_without_manual_refresh() {
+        let tmp = fixture();
+        let index = RegexIndex::build(tmp.path());
+        assert_eq!(index.find_symbols("watched_fn", 5).unwrap().len(), 0);
+
+        std::fs::write(tmp.path().join("watched.rs"), "pub fn watched_fn() {}\n").unwrap();
+        // No refresh_now here: the watcher's dirty flag must do it. Event
+        // delivery is async — poll briefly.
+        let mut found = false;
+        for _ in 0..60 {
+            std::thread::sleep(Duration::from_millis(50));
+            if index.find_symbols("watched_fn", 5).unwrap().len() == 1 {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "watcher event should have invalidated the index");
+    }
+
+    #[test]
+    fn treesitter_precision_replaces_regex_for_covered_languages() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("t.rs"),
+            "// fn commented() {}\nconst S: &str = \"fn faked() {}\";\npub fn genuine() {}\n",
+        )
+        .unwrap();
+        let index = RegexIndex::build(tmp.path());
+        assert_eq!(index.find_symbols("genuine", 5).unwrap().len(), 1);
+        assert_eq!(index.find_symbols("commented", 5).unwrap().len(), 0);
+        assert_eq!(index.find_symbols("faked", 5).unwrap().len(), 0);
     }
 
     #[test]

@@ -138,8 +138,26 @@ context/cost with discipline instead of vibes.
   sound (no alternation/optionality/classes) search only candidate files
   containing every required token, with a forced refresh so late-created
   files are never missed. Languages: rust, python, ts/js, go + new
-  java/kotlin, c/c++, ruby. *(done — this iteration)* Still open:
-  tree-sitter precision, fs-watcher push updates, per-worktree overlays.
+  java/kotlin, c/c++, ruby. *(done)*
+- [x] **Code index, phase 3.** (a) **Tree-sitter precision** for rust,
+  python, ts/tsx/js, go: real syntax trees, so strings/comments can't
+  fake definitions and methods know their enclosing type (incl. trait
+  method signatures, `export const` arrow functions); regex remains the
+  fallback for java/kotlin, c/c++, ruby. (b) **fs-watcher invalidation**
+  (notify): a dirty flag replaces stat-walk polling — queries refresh
+  only when something actually changed (60s dropped-event safety net;
+  watcher-less filesystems fall back to debounced walks). (c) **Shared
+  per-root registry**: sessions on the same checkout converge on one
+  live index (weak entries free on last close); distinct worktrees keep
+  honest separate indexes. (d) **Repo-map quality** (dogfooded on this
+  repo): data-driven genericity — names defined in 3+ files (`new`,
+  `tests`, accessors) are excluded, types lead, so the map reads as the
+  domain model, not boilerplate. Release-profile timings on this repo:
+  ~230ms build, ~2.6ms clean refresh, ~3.5ms map. Dev tool:
+  `cargo run -p harness-index --release --example repomap -- <path>
+  [query]`. *(done — this iteration)* Deferred until profiling demands:
+  content-level cross-worktree dedup, fst symbol automaton, trigram
+  postings.
 - [x] **Sub-agents.** The `subagent` tool spawns read-only explorer agents
   with fresh contexts; several calls in one turn fan out in parallel via
   the existing tool threads; only final reports return. Recursion fails
