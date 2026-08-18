@@ -62,8 +62,10 @@ context/cost with discipline instead of vibes.
   unified-diff overlay (per-file patch, untracked files included).
   *(done — this iteration)* Still open: partial staging, side-by-side
   mode, diffs for session-worktree checkouts.
-- [ ] **Merge flow polish.** Post-merge cleanup (delete branch + worktree),
-  divergence warnings before merge, "merge & close session" one-click.
+- [x] **Merge flow polish.** After a successful merge the git panel offers
+  one-click cleanup: close the owning session, remove the worktree, delete
+  the merged branch (dismissable). *(done — this iteration)* Still open:
+  divergence warnings before merge.
 - [ ] **Permission model.** Tool allowlists per project (bash command
   approval, path fences) — trust is a product feature.
 - [ ] **Model catalog fetch.** "Fetch models" button per provider: query

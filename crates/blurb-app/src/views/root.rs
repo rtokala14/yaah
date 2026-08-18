@@ -22,6 +22,13 @@ pub struct DiffView {
     pub loading: bool,
 }
 
+/// Offered after a successful merge: one click closes the owning session,
+/// removes the worktree, and deletes the merged branch.
+pub struct MergeCleanup {
+    pub branch: String,
+    pub worktree: Option<String>,
+}
+
 pub struct RootView {
     pub workspace: Workspace,
     pub prompt_input: Entity<InputState>,
@@ -34,6 +41,8 @@ pub struct RootView {
     pub git_op_status: Option<String>,
     /// Open per-file diff overlay.
     pub diff_view: Option<DiffView>,
+    /// Pending post-merge cleanup offer.
+    pub merge_cleanup: Option<MergeCleanup>,
     pub transcript_scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -106,6 +115,7 @@ impl RootView {
             provider_editor: None,
             git_op_status: None,
             diff_view: None,
+            merge_cleanup: None,
             transcript_scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
         }
@@ -205,24 +215,86 @@ impl RootView {
     }
 
     /// Merge a session branch (or any local branch) into the project HEAD.
-    pub fn merge_branch(&mut self, branch: String, cx: &mut Context<Self>) {
+    /// On success, offer cleanup of the branch + its worktree.
+    pub fn merge_branch(
+        &mut self,
+        branch: String,
+        worktree: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let root = self.workspace.project_root.clone();
         self.git_op_status = Some(format!("merging {branch}…"));
+        self.merge_cleanup = None;
         cx.notify();
-        self.run_git_op(cx, move || {
-            match harness_git::GitRepo::discover(&root)
-                .and_then(|r| r.merge_branch_into_head(&branch))
-            {
-                Ok(MergeOutcome::UpToDate) => Ok(format!("{branch}: already up to date")),
-                Ok(MergeOutcome::FastForward(id)) => Ok(format!("fast-forwarded to {id}")),
-                Ok(MergeOutcome::Merged(id)) => Ok(format!("merged {branch} → {id}")),
-                Ok(MergeOutcome::Conflicts(paths)) => Err(format!(
-                    "merge stopped — conflicts in: {} (nothing was changed)",
-                    paths.join(", ")
-                )),
-                Err(e) => Err(format!("merge failed: {e}")),
+        let op_branch = branch.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    harness_git::GitRepo::discover(&root)
+                        .and_then(|r| r.merge_branch_into_head(&op_branch))
+                })
+                .await;
+            let _ = this.update(cx, |this: &mut Self, cx| {
+                let (msg, merged) = match result {
+                    Ok(MergeOutcome::UpToDate) => {
+                        (format!("{branch}: already up to date"), true)
+                    }
+                    Ok(MergeOutcome::FastForward(id)) => {
+                        (format!("fast-forwarded to {id}"), true)
+                    }
+                    Ok(MergeOutcome::Merged(id)) => (format!("merged {branch} → {id}"), true),
+                    Ok(MergeOutcome::Conflicts(paths)) => (
+                        format!(
+                            "merge stopped — conflicts in: {} (nothing was changed)",
+                            paths.join(", ")
+                        ),
+                        false,
+                    ),
+                    Err(e) => (format!("merge failed: {e}"), false),
+                };
+                if merged {
+                    this.merge_cleanup = Some(MergeCleanup { branch, worktree });
+                }
+                this.git_op_status = Some(msg);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Execute a pending merge-cleanup offer: close the owning session,
+    /// remove the worktree, delete the merged branch.
+    pub fn perform_merge_cleanup(&mut self, cx: &mut Context<Self>) {
+        let Some(cleanup) = self.merge_cleanup.take() else { return };
+        if let Some(name) = &cleanup.worktree {
+            if let Some(i) = self.workspace.worktree_sessions().get(name).copied() {
+                self.workspace.close_session(i, true);
+            } else {
+                // Worktree without a live session: remove it directly by
+                // going through git (it shows up in the next snapshot).
+                let root = self.workspace.project_root.clone();
+                let wt = name.clone();
+                cx.background_spawn(async move {
+                    let _ = harness_git::GitRepo::discover(&root)
+                        .and_then(|r| r.remove_worktree(&wt));
+                })
+                .detach();
             }
+        }
+        let branch = cleanup.branch.clone();
+        let root = self.workspace.project_root.clone();
+        self.run_git_op(cx, move || {
+            harness_git::GitRepo::discover(&root)
+                .and_then(|r| r.delete_branch(&branch))
+                .map(|_| format!("cleaned up {branch}"))
+                .map_err(|e| format!("branch delete failed: {e}"))
         });
+        cx.notify();
+    }
+
+    pub fn dismiss_merge_cleanup(&mut self, cx: &mut Context<Self>) {
+        self.merge_cleanup = None;
+        cx.notify();
     }
 
     /// Open the diff overlay for one changed file (loads off-thread).

@@ -520,6 +520,14 @@ impl GitRepo {
         Ok(oid.to_string()[..8].to_string())
     }
 
+    /// Delete a local branch. Only called after a successful merge (the
+    /// merge-cleanup flow); libgit2 does not itself check merged-ness.
+    pub fn delete_branch(&self, name: &str) -> Result<()> {
+        let mut branch = self.repo.find_branch(name, BranchType::Local)?;
+        branch.delete()?;
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // Worktrees
 
@@ -790,6 +798,32 @@ mod tests {
             repo.merge_branch_into_head("feature").unwrap(),
             MergeOutcome::UpToDate
         ));
+    }
+
+    #[test]
+    fn merged_branch_can_be_deleted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo2 = init_repo(tmp.path());
+        let head = repo2.head().unwrap().peel_to_commit().unwrap();
+        repo2.branch("feature", &head, false).unwrap();
+        repo2.set_head("refs/heads/feature").unwrap();
+        repo2.checkout_head(Some(git2::build::CheckoutBuilder::new().force())).unwrap();
+        commit_file(tmp.path(), "f.txt", "f\n", "feat");
+        let main_name = GitRepo::discover(tmp.path())
+            .unwrap()
+            .branches()
+            .unwrap()
+            .into_iter()
+            .find(|b| b.name != "feature")
+            .unwrap()
+            .name;
+        repo2.set_head(&format!("refs/heads/{main_name}")).unwrap();
+        repo2.checkout_head(Some(git2::build::CheckoutBuilder::new().force())).unwrap();
+
+        let repo = GitRepo::discover(tmp.path()).unwrap();
+        repo.merge_branch_into_head("feature").unwrap();
+        repo.delete_branch("feature").unwrap();
+        assert!(!repo.branches().unwrap().iter().any(|b| b.name == "feature"));
     }
 
     #[test]

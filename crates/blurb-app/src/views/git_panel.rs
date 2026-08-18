@@ -187,13 +187,18 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
                                 })
                                 .when(mergeable, |this| {
                                     let branch = wt_branch.clone().unwrap_or_default();
+                                    let wt_name = name.clone();
                                     this.child(
                                         Button::new(SharedString::from(format!("merge-{name}")))
                                             .label("Merge")
                                             .ghost()
                                             .xsmall()
                                             .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.merge_branch(branch.clone(), cx);
+                                                this.merge_branch(
+                                                    branch.clone(),
+                                                    Some(wt_name.clone()),
+                                                    cx,
+                                                );
                                             })),
                                     )
                                 })
@@ -243,6 +248,46 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
                 .child(div().text_sm().font_weight(FontWeight::BOLD).child("Git")),
         )
         .child(body)
+        // Post-merge cleanup offer
+        .when_some(
+            view.merge_cleanup.as_ref().map(|c| c.branch.clone()),
+            |this, branch| {
+                this.child(
+                    h_flex()
+                        .px_3()
+                        .py_1p5()
+                        .gap_2()
+                        .items_center()
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .text_xs()
+                                .flex_1()
+                                .truncate()
+                                .child(format!("{branch} is merged — clean up?")),
+                        )
+                        .child(
+                            Button::new("do-cleanup")
+                                .label("Remove worktree + branch")
+                                .primary()
+                                .xsmall()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.perform_merge_cleanup(cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("dismiss-cleanup")
+                                .icon(IconName::Close)
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.dismiss_merge_cleanup(cx)
+                                })),
+                        ),
+                )
+            },
+        )
         // Last operation outcome
         .when_some(view.git_op_status.clone(), |this, msg| {
             this.child(
