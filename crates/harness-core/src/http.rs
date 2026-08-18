@@ -67,6 +67,49 @@ pub fn post_json_streaming(
     Err(last_err.unwrap_or(ProviderError::Network("exhausted retries".into())))
 }
 
+/// Simple JSON GET (model catalogs, health checks). One retry pass for
+/// transient statuses.
+pub fn get_json(
+    url: &str,
+    headers: &[(String, String)],
+) -> Result<serde_json::Value, ProviderError> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build();
+    let mut attempt = 0;
+    loop {
+        let mut req = agent.get(url).set("accept", "application/json");
+        for (k, v) in headers {
+            req = req.set(k, v);
+        }
+        match req.call() {
+            Ok(res) => {
+                let text = res.into_string().map_err(|e| ProviderError::Network(e.to_string()))?;
+                return serde_json::from_str(&text)
+                    .map_err(|e| ProviderError::Stream(format!("invalid JSON: {e}")));
+            }
+            Err(ureq::Error::Status(status, res)) => {
+                let body = res.into_string().unwrap_or_default();
+                if attempt < 2 && RETRYABLE.contains(&status) {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(500 * attempt as u64));
+                    continue;
+                }
+                return Err(ProviderError::Api { status, body: truncate(&body, 800) });
+            }
+            Err(ureq::Error::Transport(t)) => {
+                if attempt < 2 {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(500 * attempt as u64));
+                    continue;
+                }
+                return Err(ProviderError::Network(t.to_string()));
+            }
+        }
+    }
+}
+
 fn sleep_cancellable(total: Duration, cancel: &CancelToken) -> Result<(), ProviderError> {
     let step = Duration::from_millis(100);
     let mut elapsed = Duration::ZERO;

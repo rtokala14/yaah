@@ -43,6 +43,10 @@ pub struct ProviderEditor {
     pub extra_body: Entity<TextareaState>,
     pub models: Vec<ModelRow>,
     pub error: Option<String>,
+    /// Catalog fetched from the endpoint: None = not fetched, Some(Err) =
+    /// fetch failed, Some(Ok) = ids ready to click-add.
+    pub fetched_models: Option<Result<Vec<String>, String>>,
+    pub fetching: bool,
 }
 
 fn text_input(
@@ -137,6 +141,30 @@ impl ProviderEditor {
             ),
             models: p.models.iter().map(|m| model_row(m, window, cx)).collect(),
             error: None,
+            fetched_models: None,
+            fetching: false,
+        }
+    }
+
+    /// A connection-only profile from the *current form values* (unsaved
+    /// edits included), for probing the endpoint's model catalog.
+    fn probe_profile(&self, cx: &App) -> harness_core::config::RunProfile {
+        harness_core::config::RunProfile {
+            name: "probe".into(),
+            kind: self.kind,
+            base_url: self.base_url.read(cx).value().trim().to_string(),
+            api_key: self.api_key.read(cx).value().trim().to_string(),
+            api_key_env: self.api_key_env.read(cx).value().trim().to_string(),
+            model: String::new(),
+            model_label: String::new(),
+            effort: None,
+            temperature: None,
+            max_tokens: 0,
+            context_window: None,
+            extra_headers: form::parse_headers(&self.extra_headers.read(cx).value())
+                .unwrap_or_default(),
+            extra_body: serde_json::Map::new(),
+            supports_reasoning_effort: false,
         }
     }
 
@@ -280,6 +308,72 @@ impl RootView {
             }
         }
         cx.notify();
+    }
+
+    /// Query the endpoint's /models catalog with the editor's current
+    /// connection fields (off-thread).
+    pub fn editor_fetch_models(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = &mut self.provider_editor else { return };
+        let profile = editor.probe_profile(cx);
+        let index = editor.index;
+        editor.fetching = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    harness_core::providers::list_models(&profile).map_err(|e| e.to_string())
+                })
+                .await;
+            let _ = this.update(cx, |this: &mut Self, cx| {
+                if let Some(editor) = &mut this.provider_editor {
+                    if editor.index == index {
+                        editor.fetching = false;
+                        editor.fetched_models = Some(result);
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Add a fetched catalog id as a model row (no duplicates).
+    pub fn editor_add_fetched_model(
+        &mut self,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = &self.provider_editor else { return };
+        let exists = editor
+            .models
+            .iter()
+            .any(|row| row.id.read(cx).value().trim() == id);
+        if exists {
+            return;
+        }
+        let model = ModelConfig::new(id);
+        let row = model_row(&model, window, cx);
+        // Blank starter rows are superseded by the first real model.
+        let blank_rows: Vec<usize> = self
+            .provider_editor
+            .as_ref()
+            .map(|e| {
+                e.models
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.id.read(cx).value().trim().is_empty())
+                    .map(|(k, _)| k)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(editor) = &mut self.provider_editor {
+            for k in blank_rows.into_iter().rev() {
+                editor.models.remove(k);
+            }
+            editor.models.push(row);
+            cx.notify();
+        }
     }
 
     pub fn editor_add_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -696,6 +790,8 @@ fn render_editor(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElemen
     let index = editor.index;
     let error = editor.error.clone();
     let model_count = editor.models.len();
+    let fetching = editor.fetching;
+    let fetched = editor.fetched_models.clone();
 
     v_flex()
         .child(
@@ -770,16 +866,59 @@ fn render_editor(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElemen
                                 .child("MODELS"),
                         )
                         .child(
-                            Button::new("add-model")
-                                .icon(IconName::Plus)
-                                .label("Add model")
-                                .ghost()
-                                .xsmall()
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.editor_add_model(window, cx)
-                                })),
+                            h_flex()
+                                .gap_1()
+                                .child(
+                                    Button::new("fetch-models")
+                                        .label(if fetching { "Fetching…" } else { "Fetch models" })
+                                        .ghost()
+                                        .xsmall()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.editor_fetch_models(cx)
+                                        })),
+                                )
+                                .child(
+                                    Button::new("add-model")
+                                        .icon(IconName::Plus)
+                                        .label("Add model")
+                                        .ghost()
+                                        .xsmall()
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.editor_add_model(window, cx)
+                                        })),
+                                ),
                         ),
                 )
+                // Fetched catalog: click an id to add it as a model.
+                .when_some(fetched, |this, result| match result {
+                    Err(e) => this.child(
+                        div().text_xs().text_color(theme.danger).child(format!("fetch failed: {e}")),
+                    ),
+                    Ok(ids) if ids.is_empty() => this.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("endpoint returned no models"),
+                    ),
+                    Ok(ids) => this.child(
+                        h_flex().gap_1().flex_wrap().children(ids.into_iter().take(40).enumerate().map(
+                            |(k, id)| {
+                                let add_id = id.clone();
+                                Button::new(("fetched-model", k))
+                                    .label(format!("+ {id}"))
+                                    .ghost()
+                                    .xsmall()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.editor_add_fetched_model(
+                                            add_id.clone(),
+                                            window,
+                                            cx,
+                                        )
+                                    }))
+                            },
+                        )),
+                    ),
+                })
                 .children(editor.models.iter().enumerate().map(|(j, row)| {
                     v_flex()
                         .gap_1()

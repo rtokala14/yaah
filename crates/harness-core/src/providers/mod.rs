@@ -15,6 +15,49 @@ pub fn build(config: &RunProfile) -> Result<Arc<dyn Provider>, crate::types::Pro
     }
 }
 
+/// Fetch the model catalog a provider connection offers. Anthropic and
+/// OpenAI-compatible servers both expose a models listing; the returned ids
+/// are ready to paste into `ModelConfig::id`. Blocking — run off-thread.
+pub fn list_models(profile: &RunProfile) -> Result<Vec<String>, ProviderError> {
+    let base = profile.resolved_base_url();
+    if base.is_empty() {
+        return Err(ProviderError::Config("base URL is required to list models".into()));
+    }
+    let key = profile.resolved_api_key();
+    let (url, mut headers): (String, Vec<(String, String)>) = match profile.kind {
+        ProviderKind::Anthropic => (
+            format!("{base}/v1/models?limit=100"),
+            vec![
+                ("x-api-key".into(), key),
+                ("anthropic-version".into(), "2023-06-01".into()),
+            ],
+        ),
+        ProviderKind::OpenAi | ProviderKind::OpenAiCompat => (
+            format!("{base}/models"),
+            vec![("authorization".into(), format!("Bearer {key}"))],
+        ),
+    };
+    headers.extend(profile.extra_headers.iter().cloned());
+    let value = crate::http::get_json(&url, &headers)?;
+    Ok(parse_model_ids(&value))
+}
+
+/// Both dialects wrap the catalog in `{"data": [{"id": ...}, ...]}`.
+pub fn parse_model_ids(value: &serde_json::Value) -> Vec<String> {
+    let mut ids: Vec<String> = value
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 /// One cheap low-effort call that names a session after its first task.
 /// Blocking — run it off the UI thread.
 pub fn generate_title(profile: &RunProfile, task: &str) -> Result<String, ProviderError> {
@@ -59,7 +102,24 @@ pub fn sanitize_title(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_title;
+    use super::{parse_model_ids, sanitize_title};
+
+    #[test]
+    fn parses_openai_and_anthropic_catalog_shapes() {
+        let openai = serde_json::json!({"object": "list", "data": [
+            {"id": "gpt-5.2", "object": "model"},
+            {"id": "gpt-5.2-mini", "object": "model"},
+            {"id": "gpt-5.2", "object": "model"} // dupes collapse
+        ]});
+        assert_eq!(parse_model_ids(&openai), vec!["gpt-5.2", "gpt-5.2-mini"]);
+
+        let anthropic = serde_json::json!({"data": [
+            {"id": "claude-opus-5", "display_name": "Claude Opus 5", "type": "model"}
+        ], "has_more": false});
+        assert_eq!(parse_model_ids(&anthropic), vec!["claude-opus-5"]);
+
+        assert!(parse_model_ids(&serde_json::json!({"error": "nope"})).is_empty());
+    }
 
     #[test]
     fn sanitize_title_cleans_model_output() {
