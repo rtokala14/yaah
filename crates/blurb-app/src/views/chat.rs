@@ -66,6 +66,14 @@ pub fn render(
                     .child(
                         div().text_xs().text_color(theme.muted_foreground).child(usage_line(s)),
                     )
+                    .child({
+                        let planning = s.transcript.plan_mode;
+                        Button::new("plan-mode")
+                            .label(if planning { "Planning" } else { "Plan" })
+                            .map(|b| if planning { b.primary() } else { b.ghost() })
+                            .xsmall()
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_plan_mode(cx)))
+                    })
                     .when_some(switch_offer, |this, label| {
                         this.child(
                             Button::new("switch-profile")

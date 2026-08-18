@@ -16,6 +16,7 @@ mod fsutil;
 mod glob_tool;
 mod grep;
 pub mod index_tools;
+mod plan;
 mod read;
 mod recall;
 mod remember;
@@ -28,6 +29,7 @@ pub use bash::BashTool;
 pub use edit::EditTool;
 pub use glob_tool::GlobTool;
 pub use grep::GrepTool;
+pub use plan::PresentPlanTool;
 pub use read::ReadTool;
 pub use recall::RecallTool;
 pub use remember::RememberTool;
@@ -53,6 +55,7 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(TodoWriteTool::new()),
         Arc::new(AskUserTool::new()),
         Arc::new(SubagentTool::new()),
+        Arc::new(PresentPlanTool::new()),
     ]
 }
 

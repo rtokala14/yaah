@@ -47,6 +47,8 @@ pub struct Transcript {
     pub pending_question: Option<u64>,
     /// Undecided permission request, if any.
     pub pending_permission: Option<u64>,
+    /// Plan mode: read-only until an approved plan.
+    pub plan_mode: bool,
 }
 
 impl Transcript {
@@ -285,6 +287,16 @@ impl Transcript {
             }
             AgentEvent::TodosUpdated { todos } => {
                 self.todos = todos.clone();
+            }
+            AgentEvent::PlanMode { on } => {
+                self.plan_mode = *on;
+                self.blocks.push(Block::Notice {
+                    text: if *on {
+                        "plan mode on — read-only until a plan is approved".into()
+                    } else {
+                        "plan mode off — implementation unlocked".into()
+                    },
+                });
             }
             AgentEvent::Compaction { before_tokens } => {
                 self.blocks.push(Block::Notice {

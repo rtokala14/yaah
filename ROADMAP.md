@@ -143,10 +143,17 @@ context/cost with discipline instead of vibes.
   (`.blurb/skills/`) markdown packs, project shadowing global; listed in
   the cache-stable prompt, full body loaded on demand via the `skill`
   tool. *(done — this iteration)*
-- [ ] **Hooks.** Pre/post tool-call hooks (lint-on-edit, test-on-done),
-  configured per project in-app.
-- [ ] **Plan mode.** Read-only exploration turn producing an approvable
-  plan before edits are allowed.
+- [x] **Hooks.** Pre/post tool-call shell hooks: pre blocks the call on
+  non-zero exit (its output becomes the error result), post appends its
+  output as feedback (lint-on-edit). Env-passed context, session cwd,
+  120s timeout. Global hooks in settings (HOOKS section) merge with the
+  project's `.blurb/hooks.json`. *(done — this iteration)*
+- [x] **Plan mode.** A per-session toggle (chat-header Plan button, or
+  the model's own flow): mutating tools are refused with guidance while
+  planning; the `present_plan` tool submits the plan through the
+  interaction channel with Approve / Keep-planning options — approval
+  unlocks implementation mid-run. Transitions render as notices; system
+  notes steer the model on toggle. *(done — this iteration)*
 - [ ] **Prompt-cache observability.** Show cache hit/miss per turn; warn
   when an action (prune/compact/profile switch) will invalidate the prefix.
 

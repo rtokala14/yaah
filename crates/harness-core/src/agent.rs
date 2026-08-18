@@ -54,6 +54,8 @@ pub struct Agent {
     session_allow_edits: bool,
     session_allowed_bash: Vec<String>,
     session_allowed_tools: Vec<String>,
+    /// Mirrors tool_ctx.plan_mode, for transition announcements.
+    known_plan_mode: bool,
     unverified_mutation: bool,
     verify_nudge_used: bool,
 }
@@ -90,6 +92,7 @@ impl Agent {
             session_allow_edits: false,
             session_allowed_bash: Vec::new(),
             session_allowed_tools: Vec::new(),
+            known_plan_mode: false,
             unverified_mutation: false,
             verify_nudge_used: false,
         }
@@ -359,16 +362,43 @@ impl Agent {
         if calls.iter().any(|c| c.name == "todo_write") {
             emit(AgentEvent::TodosUpdated { todos: self.tool_ctx.todos.lock().unwrap().clone() });
         }
+        // An approved present_plan flips plan mode off inside the tool —
+        // announce the transition.
+        let plan_now = self.tool_ctx.plan_mode.load(std::sync::atomic::Ordering::Relaxed);
+        if plan_now != self.known_plan_mode {
+            self.known_plan_mode = plan_now;
+            emit(AgentEvent::PlanMode { on: plan_now });
+        }
         results.into_iter().flatten().collect()
+    }
+
+    /// Host-side plan mode toggle (the user flipped the switch).
+    pub fn set_plan_mode(&mut self, on: bool) {
+        self.tool_ctx.plan_mode.store(on, std::sync::atomic::Ordering::Relaxed);
+        self.known_plan_mode = on;
+        self.add_system_note(if on {
+            "Plan mode enabled by the user: investigate read-only and design the change. Do not modify files or run commands. When the plan is ready, present it with the present_plan tool for approval."
+        } else {
+            "Plan mode disabled by the user: you may implement now."
+        });
     }
 
     /// Returns Some(denial result) when the call may not run. Read-only
     /// tools never reach this (they execute in the parallel branch).
     fn permission_gate(&mut self, call: &ToolCallPart) -> Option<ToolResultPart> {
         let is_mcp = call.name.starts_with("mcp_");
-        if !self.opts.permissions.ask
-            || (!GATED_TOOLS.contains(&call.name.as_str()) && !is_mcp)
-        {
+        let gated = GATED_TOOLS.contains(&call.name.as_str()) || is_mcp;
+        // Plan mode outranks every allowance: no mutations until the plan
+        // is approved.
+        if gated && self.tool_ctx.plan_mode.load(std::sync::atomic::Ordering::Relaxed) {
+            return Some(ToolResultPart {
+                tool_call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                content: "Plan mode is active: no file modifications, commands, or external tools. Investigate read-only, then present your plan with present_plan for approval.".into(),
+                is_error: true,
+            });
+        }
+        if !self.opts.permissions.ask || !gated {
             return None;
         }
         let is_edit = MUTATING_TOOLS.contains(&call.name.as_str());

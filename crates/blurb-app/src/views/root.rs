@@ -326,6 +326,15 @@ impl RootView {
         }
     }
 
+    /// Toggle plan mode on the active session.
+    pub fn toggle_plan_mode(&mut self, cx: &mut Context<Self>) {
+        if let Some(active) = self.workspace.active_session {
+            let on = !self.workspace.sessions[active].transcript.plan_mode;
+            self.workspace.set_plan_mode(active, on);
+            cx.notify();
+        }
+    }
+
     /// Point the active session at the settings-selected default
     /// provider/model for its future turns.
     pub fn switch_active_session_profile(&mut self, cx: &mut Context<Self>) {

@@ -35,6 +35,8 @@ pub enum SessionCommand {
     /// Swap the provider/model for subsequent turns (transcript is kept;
     /// the prompt-cache prefix resets).
     SetProfile(RunProfile),
+    /// Toggle plan mode (read-only until a plan is approved).
+    SetPlanMode(bool),
     Shutdown,
 }
 
@@ -351,6 +353,10 @@ fn session_thread(
                 // progress stops); by the time this message is processed the
                 // run has returned — re-arm for the next one.
                 session_cancel.reset();
+            }
+            SessionCommand::SetPlanMode(on) => {
+                agent.set_plan_mode(on);
+                let _ = events.send(SessionEvent::Agent(AgentEvent::PlanMode { on }));
             }
             SessionCommand::SetProfile(profile) => match providers::build(&profile) {
                 Ok(p) => {

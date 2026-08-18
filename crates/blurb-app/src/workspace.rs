@@ -229,6 +229,13 @@ impl Workspace {
         self.sessions.get(session).and_then(|s| s.transcript.pending_question)
     }
 
+    /// Toggle plan mode on a session (confirmed back via a PlanMode event).
+    pub fn set_plan_mode(&mut self, session: usize, on: bool) {
+        if let Some(s) = self.sessions.get(session) {
+            s.handle.send(SessionCommand::SetPlanMode(on));
+        }
+    }
+
     /// Rename a session (auto-titling or user edit) in the handle and the
     /// persisted metadata.
     pub fn rename_session(&mut self, session: usize, title: &str) {

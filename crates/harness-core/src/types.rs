@@ -204,6 +204,9 @@ pub struct ToolContext {
     /// Pre/post tool-call hooks (run inside `run_tool`, so parallel
     /// batches get them too).
     pub hooks: Vec<crate::hooks::HookConfig>,
+    /// Plan mode: while true, mutating tools are refused with guidance;
+    /// `present_plan` flips it off on user approval.
+    pub plan_mode: std::sync::atomic::AtomicBool,
 }
 
 impl ToolContext {
@@ -225,6 +228,7 @@ impl ToolContext {
             interaction,
             subagent: Mutex::new(None),
             hooks: Vec::new(),
+            plan_mode: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -370,6 +374,8 @@ pub enum AgentEvent {
     MemoryNote { text: String },
     /// The session todo list changed (via the `todo_write` tool).
     TodosUpdated { todos: Vec<TodoItem> },
+    /// Plan mode toggled (by the user, or by an approved present_plan).
+    PlanMode { on: bool },
     TurnEnd { stop_reason: StopReason, usage: Usage },
     Done { reason: String, final_text: String },
     Error(String),

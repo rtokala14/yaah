@@ -85,6 +85,13 @@ covers architecture, `INDEX-DESIGN.md` the future code index.
 - **Index**: `RegexIndex::build` runs once per session thread;
   `symbols`/`refs`/`outline` tools always join; the 2k-token repo map is
   appended to the system prompt when `inject_repo_map` is on.
+- **Hooks**: `hooks.rs` — pre (blocks on failure) / post (appends
+  feedback) shell hooks run inside `run_tool`; settings hooks merge with
+  `.blurb/hooks.json`. Subagents run hook-free.
+- **Plan mode**: `ToolContext.plan_mode` AtomicBool. The gate refuses all
+  gated + mcp tools while on (outranks every allowance); `present_plan`
+  flips it off on user approval; transitions announced via
+  `AgentEvent::PlanMode` (watermarked after tool batches).
 
 ## Persistence model
 
