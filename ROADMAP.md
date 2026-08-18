@@ -58,9 +58,10 @@ context/cost with discipline instead of vibes.
   button appears in the chat header when the settings default differs from
   the session's profile; the switch renders as a transcript notice (cache
   prefix reset called out). *(done — this iteration)*
-- [ ] **Diff review UX.** Click a file in the git panel → full patch view
-  (colored hunks); review agent changes before committing. Then: partial
-  staging, side-by-side mode.
+- [x] **Diff review UX, v1.** Click a file in the git panel → colored
+  unified-diff overlay (per-file patch, untracked files included).
+  *(done — this iteration)* Still open: partial staging, side-by-side
+  mode, diffs for session-worktree checkouts.
 - [ ] **Merge flow polish.** Post-merge cleanup (delete branch + worktree),
   divergence warnings before merge, "merge & close session" one-click.
 - [ ] **Permission model.** Tool allowlists per project (bash command

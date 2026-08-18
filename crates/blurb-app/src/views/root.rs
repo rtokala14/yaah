@@ -2,9 +2,10 @@
 //! owns the Workspace model and the two background loops (session event
 //! pump, git refresh).
 
+use crate::diff::{parse_patch, DiffLine};
 use crate::settings::Settings;
 use crate::views::settings_view::{self, ProviderEditor};
-use crate::views::{chat, git_panel, sidebar};
+use crate::views::{chat, diff_view, git_panel, sidebar};
 use crate::workspace::Workspace;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -14,6 +15,12 @@ use gpui_component::ActiveTheme;
 use harness_git::MergeOutcome;
 use std::path::PathBuf;
 use std::time::Duration;
+
+pub struct DiffView {
+    pub path: String,
+    pub lines: Vec<DiffLine>,
+    pub loading: bool,
+}
 
 pub struct RootView {
     pub workspace: Workspace,
@@ -25,6 +32,8 @@ pub struct RootView {
     pub provider_editor: Option<ProviderEditor>,
     /// Outcome of the last git operation (commit/merge), shown in the panel.
     pub git_op_status: Option<String>,
+    /// Open per-file diff overlay.
+    pub diff_view: Option<DiffView>,
     pub transcript_scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -96,6 +105,7 @@ impl RootView {
             show_settings: false,
             provider_editor: None,
             git_op_status: None,
+            diff_view: None,
             transcript_scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
         }
@@ -215,6 +225,45 @@ impl RootView {
         });
     }
 
+    /// Open the diff overlay for one changed file (loads off-thread).
+    pub fn open_file_diff(&mut self, path: String, cx: &mut Context<Self>) {
+        let root = self.workspace.project_root.clone();
+        self.diff_view =
+            Some(DiffView { path: path.clone(), lines: Vec::new(), loading: true });
+        cx.notify();
+        let file = path.clone();
+        cx.spawn(async move |this, cx| {
+            let patch = cx
+                .background_spawn(async move {
+                    harness_git::GitRepo::discover(&root)
+                        .and_then(|r| r.diff_patch_file(&file))
+                        .map_err(|e| e.to_string())
+                })
+                .await;
+            let _ = this.update(cx, |this: &mut Self, cx| {
+                if let Some(dv) = &mut this.diff_view {
+                    if dv.path == path {
+                        dv.loading = false;
+                        dv.lines = match patch {
+                            Ok(p) if p.trim().is_empty() => {
+                                parse_patch("(no uncommitted changes in this file)")
+                            }
+                            Ok(p) => parse_patch(&p),
+                            Err(e) => parse_patch(&format!("diff failed: {e}")),
+                        };
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn close_diff_view(&mut self, cx: &mut Context<Self>) {
+        self.diff_view = None;
+        cx.notify();
+    }
+
     /// Run a blocking git operation off the UI thread and surface its
     /// outcome message in the git panel.
     fn run_git_op(
@@ -290,6 +339,9 @@ impl Render for RootView {
             .child(main)
             .when(self.show_settings, |this| {
                 this.child(settings_view::render(self, cx))
+            })
+            .when(self.diff_view.is_some(), |this| {
+                this.child(diff_view::render(self, cx))
             })
     }
 }

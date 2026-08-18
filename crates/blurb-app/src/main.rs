@@ -4,6 +4,7 @@
 //! `gpui_component::init`, window opened from a spawned task, root view
 //! wrapped in `gpui_component::Root`.
 
+mod diff;
 mod persist;
 mod settings;
 mod transcript;

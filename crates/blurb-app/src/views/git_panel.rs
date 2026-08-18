@@ -102,13 +102,21 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
                         .child(div().text_color(theme.success).child(format!("+{}", diff.insertions)))
                         .child(div().text_color(theme.danger).child(format!("−{}", diff.deletions))),
                 )
-                // Status list
+                // Status list — click a row to review its diff
                 .child(
                     v_flex().gap_0p5().overflow_hidden().children(
-                        statuses.into_iter().take(30).map(|s| {
+                        statuses.into_iter().take(30).enumerate().map(|(i, s)| {
+                            let path = s.path.clone();
                             h_flex()
+                                .id(("status", i))
                                 .gap_2()
                                 .text_xs()
+                                .cursor_pointer()
+                                .rounded(theme.radius)
+                                .hover(|d| d.bg(theme.accent))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_file_diff(path.clone(), cx)
+                                }))
                                 .child(
                                     div()
                                         .w(px(20.))

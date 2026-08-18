@@ -469,9 +469,21 @@ impl GitRepo {
 
     /// Full patch text of uncommitted changes (for the diff viewer).
     pub fn diff_patch(&self) -> Result<String> {
+        self.diff_patch_inner(None)
+    }
+
+    /// Patch text of uncommitted changes for one file.
+    pub fn diff_patch_file(&self, path: &str) -> Result<String> {
+        self.diff_patch_inner(Some(path))
+    }
+
+    fn diff_patch_inner(&self, pathspec: Option<&str>) -> Result<String> {
         let head_tree = self.repo.head().and_then(|h| h.peel_to_tree()).ok();
         let mut opts = DiffOptions::new();
-        opts.include_untracked(true).recurse_untracked_dirs(true);
+        opts.include_untracked(true).recurse_untracked_dirs(true).show_untracked_content(true);
+        if let Some(p) = pathspec {
+            opts.pathspec(p);
+        }
         let diff =
             self.repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))?;
         let mut out = String::new();
@@ -811,6 +823,25 @@ mod tests {
         assert_eq!(repo2.state(), git2::RepositoryState::Clean);
         assert_eq!(std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(), "main version\n");
         assert!(repo.statuses().unwrap().is_empty());
+    }
+
+    #[test]
+    fn per_file_patch_is_scoped() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        std::fs::write(tmp.path().join("a.txt"), "hello\nchanged\n").unwrap();
+        std::fs::write(tmp.path().join("new.txt"), "brand new\n").unwrap();
+
+        let repo = GitRepo::discover(tmp.path()).unwrap();
+        let a = repo.diff_patch_file("a.txt").unwrap();
+        assert!(a.contains("+changed"));
+        assert!(!a.contains("brand new"));
+        // Untracked files still produce content.
+        let n = repo.diff_patch_file("new.txt").unwrap();
+        assert!(n.contains("+brand new"));
+        // The unscoped patch has both.
+        let all = repo.diff_patch().unwrap();
+        assert!(all.contains("+changed") && all.contains("+brand new"));
     }
 
     #[test]
