@@ -3,11 +3,12 @@
 
 use crate::transcript::Block;
 use crate::views::root::RootView;
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::button::Button;
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::Input;
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::{h_flex, v_flex, ActiveTheme, IconName};
+use gpui_component::{h_flex, v_flex, ActiveTheme, IconName, Sizable as _};
 
 pub fn render(
     view: &RootView,
@@ -30,7 +31,7 @@ pub fn render(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().text_sm().font_bold().child(s.handle.title.clone()))
+                    .child(div().text_sm().font_weight(FontWeight::BOLD).child(s.handle.title.clone()))
                     .child(
                         div()
                             .text_xs()
@@ -94,7 +95,7 @@ pub fn render(
                         .p_4()
                         .gap_3()
                         .children(blocks.into_iter().enumerate().map(|(i, b)| {
-                            render_block(i, b, cx)
+                            render_block(i, b, theme)
                         })),
                 )
                 .vertical_scrollbar(&view.transcript_scroll)
@@ -105,7 +106,7 @@ pub fn render(
             .items_center()
             .justify_center()
             .gap_2()
-            .child(div().text_xl().font_bold().child("blurb"))
+            .child(div().text_xl().font_weight(FontWeight::BOLD).child("blurb"))
             .child(
                 div()
                     .text_sm()
@@ -151,8 +152,11 @@ fn usage_line(s: &crate::workspace::SessionState) -> String {
     }
 }
 
-fn render_block(i: usize, block: Block, cx: &mut Context<RootView>) -> AnyElement {
-    let theme = cx.theme();
+fn render_block(
+    i: usize,
+    block: Block,
+    theme: &gpui_component::theme::Theme,
+) -> AnyElement {
     match block {
         Block::UserMessage { text } => div()
             .px_3()
@@ -186,12 +190,12 @@ fn render_block(i: usize, block: Block, cx: &mut Context<RootView>) -> AnyElemen
                 .rounded(theme.radius)
                 .border_1()
                 .border_color(if is_error { theme.danger } else { theme.border })
-                .bg(theme.card)
+                .bg(theme.popover)
                 .child(
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(div().text_xs().font_bold().child(format!("⏺ {name}")))
+                        .child(div().text_xs().font_weight(FontWeight::BOLD).child(format!("⏺ {name}")))
                         .child(
                             div()
                                 .text_xs()

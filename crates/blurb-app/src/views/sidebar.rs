@@ -2,9 +2,10 @@
 //! new-session button, provider + settings footer.
 
 use crate::views::root::RootView;
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::button::Button;
-use gpui_component::{h_flex, v_flex, ActiveTheme, Icon, IconName};
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable as _};
 
 pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
     let theme = cx.theme();
@@ -16,7 +17,7 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
         .unwrap_or_else(|| "project".into());
     let rows = view.workspace.session_rows();
     let active = view.workspace.active_session;
-    let provider_label = view.workspace.settings.active().name.clone();
+    let provider_label = view.workspace.settings.active_profile().label();
 
     v_flex()
         .size_full()
@@ -35,7 +36,7 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
                         .gap_2()
                         .items_center()
                         .child(Icon::new(IconName::Folder).text_color(theme.muted_foreground))
-                        .child(div().text_sm().font_bold().child(project_name)),
+                        .child(div().text_sm().font_weight(FontWeight::BOLD).child(project_name)),
                 )
                 .child(
                     Button::new("new-session")

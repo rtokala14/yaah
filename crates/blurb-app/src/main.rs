@@ -42,7 +42,7 @@ fn main() {
                     cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
                 })
                 .expect("failed to open window");
-                cx.update(|cx| cx.activate(true)).ok();
+                cx.update(|cx| cx.activate(true));
             })
             .detach();
         });

@@ -1,0 +1,5 @@
+# Must be >= what the pinned zed rev's own rust-toolchain.toml requires
+# (gpui uses recently-stabilized std APIs; older rustc fails with E0658).
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"

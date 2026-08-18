@@ -6,7 +6,7 @@
 //! callback or a background task that forwards into the UI entity).
 
 use crate::agent::{Agent, AgentOptions};
-use crate::config::ProviderConfig;
+use crate::config::RunProfile;
 use crate::context::ContextOptions;
 use crate::prompt::build_system_prompt;
 use crate::providers;
@@ -43,8 +43,8 @@ pub struct SessionHandle {
 
 impl SessionHandle {
     /// Spawn a session working in `cwd` (typically a git worktree — see
-    /// harness-git) against the given provider profile.
-    pub fn spawn(id: u64, title: String, cwd: PathBuf, provider_config: ProviderConfig) -> Self {
+    /// harness-git) against the given resolved provider+model profile.
+    pub fn spawn(id: u64, title: String, cwd: PathBuf, provider_config: RunProfile) -> Self {
         let (cmd_tx, cmd_rx) = unbounded::<SessionCommand>();
         let (ev_tx, ev_rx) = unbounded::<SessionEvent>();
         let cancel = CancelToken::new();
@@ -79,7 +79,7 @@ impl Drop for SessionHandle {
 
 fn session_thread(
     cwd: PathBuf,
-    provider_config: ProviderConfig,
+    provider_config: RunProfile,
     commands: Receiver<SessionCommand>,
     events: Sender<SessionEvent>,
     session_cancel: CancelToken,

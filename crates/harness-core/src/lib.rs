@@ -30,6 +30,6 @@ pub mod tools;
 pub mod types;
 
 pub use agent::{Agent, AgentOptions, AgentResult};
-pub use config::{ProviderConfig, ProviderKind};
+pub use config::{ModelConfig, ProviderConfig, ProviderKind, RunProfile};
 pub use session::{SessionCommand, SessionEvent, SessionHandle};
 pub use types::*;

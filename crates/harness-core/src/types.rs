@@ -143,6 +143,8 @@ pub enum Effort {
     Low,
     Medium,
     High,
+    // snake_case would give "x_high"; settings files use "xhigh".
+    #[serde(rename = "xhigh", alias = "x_high")]
     XHigh,
     Max,
 }

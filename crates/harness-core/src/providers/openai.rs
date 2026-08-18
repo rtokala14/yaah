@@ -9,7 +9,7 @@
 //!  - `finish_reason: stop` despite tool calls → accumulated calls win
 //!  - usage requested via stream_options but tolerated if absent
 
-use crate::config::{ProviderConfig, ProviderKind};
+use crate::config::{ProviderKind, RunProfile};
 use crate::http::post_json_streaming;
 use crate::sse::SseReader;
 use crate::types::*;
@@ -17,12 +17,12 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
 pub struct OpenAiProvider {
-    config: ProviderConfig,
+    config: RunProfile,
     api_key: String,
 }
 
 impl OpenAiProvider {
-    pub fn new(config: ProviderConfig) -> Result<Self, ProviderError> {
+    pub fn new(config: RunProfile) -> Result<Self, ProviderError> {
         if config.resolved_base_url().is_empty() {
             return Err(ProviderError::Config("base_url is required".into()));
         }

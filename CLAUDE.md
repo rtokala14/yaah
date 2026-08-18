@@ -1,0 +1,71 @@
+# Blurb — repo memory
+
+Native desktop agentic coding harness. Rust + GPUI (Zed's UI framework) +
+longbridge `gpui-component` widgets. Read `ROADMAP.md` first — it is the
+prioritized product plan and gets updated every working session. `DESIGN.md`
+covers architecture, `INDEX-DESIGN.md` the future code index.
+
+## Crate map
+
+| Crate | Role | Constraints |
+|---|---|---|
+| `harness-core` | providers, tools, agent loop, context mgmt, session threads | **no UI deps, no tokio** — synchronous by design, tests run headless |
+| `harness-git` | libgit2: status/diff/commit/worktrees/log-graph/merge | no UI deps, tests headless |
+| `harness-index` | code-index trait + NullIndex (phase 2) | no UI deps |
+| `blurb-app` | the GPUI app | only crate allowed to touch gpui |
+
+## Provider model (v2 — multi-model)
+
+- `config::ProviderConfig` is a **connection**: name, kind
+  (anthropic / openai / openai_compat), base_url, api_key / api_key_env,
+  extra HTTP headers, extra body fields, quirk switches — and a list of
+  `ModelConfig`s (id, label, effort, temperature, max_tokens, per-model
+  extra body). `active_model` indexes into `models`.
+- `config::RunProfile` is the **resolved flat profile** (one provider + one
+  model, extra_body merged with model winning) that `providers::build`,
+  the adapters, and `SessionHandle::spawn` consume. UI/settings never hand
+  a raw ProviderConfig to the session layer — always `resolve()`.
+- Legacy flat settings files (provider-level `model`/`effort`/…) migrate in
+  `ProviderConfig::normalize()`, called on load. Keep that path working.
+- Everything is editable in-app (settings overlay). The TOML settings file
+  (`~/.config/blurb/settings.toml`) is persistence, not an interface —
+  never build a feature that requires hand-editing it.
+
+## Threading model (don't fight it)
+
+UI thread (GPUI) ⇄ one OS thread per session over crossbeam channels
+(`SessionCommand` in, `SessionEvent` out). Blocking `ureq` SSE in the
+session thread; scoped threads for parallel read-only tools. git (libgit2)
+runs via `cx.background_spawn`; the git panel renders immutable
+`RepoSnapshot` values only. Interrupt = shared atomic `CancelToken`
+(re-armed after each run).
+
+## Build (heavy — plan around it)
+
+- Fast inner loop: `cargo check -p harness-core -p harness-git` and
+  `cargo test -p harness-core -p harness-git` — seconds-to-minutes, no UI.
+- `cargo check -p blurb-app` pulls gpui from the zed repo — first build is
+  very expensive (tens of minutes). gpui + gpui_platform are pinned to the
+  zed rev that gpui-component's Cargo.lock pins; bump all three in
+  lockstep or nothing compiles (see README "first build checklist").
+- GPUI API drifts; expect renames when bumping revs, not redesigns.
+
+## Conventions
+
+- Keep view files thin: `workspace.rs` / `transcript.rs` are GPUI-free
+  models with unit tests; `views/*` only render and dispatch.
+- New git capabilities go in `harness-git` with headless tests first, then
+  get a panel affordance.
+- Provider quirks are settings entries (headers/body extras), never code
+  forks per vendor.
+- Session worktrees live in a sibling dir `.<repo>-blurb-worktrees/`,
+  branches under `blurb/<slug>-<hash>`; branch is kept when a worktree is
+  removed.
+
+## Session ritual
+
+1. Read ROADMAP.md; pick from the highest unfinished tier.
+2. Core-first: land testable logic in harness-core/-git, then UI.
+3. Run headless tests; `cargo check -p blurb-app` when UI changed.
+4. Update ROADMAP.md checkboxes + this file if architecture moved.
+5. Commit with clear messages; push to the designated branch.

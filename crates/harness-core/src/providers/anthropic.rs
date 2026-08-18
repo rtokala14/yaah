@@ -5,7 +5,7 @@
 //! extends the cached prefix incrementally. Bodies are built with stable key
 //! order and no volatile fields.
 
-use crate::config::ProviderConfig;
+use crate::config::RunProfile;
 use crate::http::{post_json_streaming, truncate};
 use crate::sse::SseReader;
 use crate::types::*;
@@ -13,12 +13,12 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
 pub struct AnthropicProvider {
-    config: ProviderConfig,
+    config: RunProfile,
     api_key: String,
 }
 
 impl AnthropicProvider {
-    pub fn new(config: ProviderConfig) -> Result<Self, ProviderError> {
+    pub fn new(config: RunProfile) -> Result<Self, ProviderError> {
         let api_key = config.resolved_api_key();
         if api_key.is_empty() {
             return Err(ProviderError::Config(

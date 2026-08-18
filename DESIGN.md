@@ -22,11 +22,14 @@ lossless reasoning round-trip), same loop (flat, parallel read-only tools),
 same context strategy (batched restorable pruning → structured compaction),
 same evidence-grounded completion gate. Differences from the prototype:
 
-- **Provider profiles are fully user-configurable** (`ProviderConfig`):
-  kind (anthropic / openai / openai-compatible), base URL, key or key-env,
-  model, effort, plus **arbitrary extra HTTP headers and extra top-level
-  body fields** merged into every request. Any gateway or compat-server
-  quirk is a settings entry, not a code change.
+- **Providers own models** (`ProviderConfig` ⊃ `ModelConfig`): a provider
+  is a connection — kind (anthropic / openai / openai-compatible), base
+  URL, key or key-env, **arbitrary extra HTTP headers and extra top-level
+  body fields** — carrying any number of models (id, label, effort,
+  temperature, max tokens, per-model body overrides). The session layer
+  consumes a resolved flat `RunProfile` (one provider + one model,
+  extra-body merged, model wins). Any gateway or compat-server quirk is a
+  settings entry, not a code change — and every field is editable in-app.
 - Tools use ripgrep's `ignore` walker (gitignore-aware) and `globset`.
 
 ## Threading model — why there is no async runtime
@@ -89,9 +92,13 @@ This is the desktop-native answer to what CLI harnesses approximate with
   - root: resizable three-pane layout (sidebar | chat | git panel),
   - sidebar: session list (running indicator, provider label) + new-session,
   - chat: virtualized transcript + input, interrupt button while running,
-  - git panel: branch/HEAD, status list, per-worktree diffstat, commit box,
-  - settings: provider profile editor including extra headers (key/value
-    rows) and extra body fields (key/JSON-value rows).
+  - git panel: branch/HEAD (ahead/behind), status list, lane-colored
+    commit history graph, worktrees with merge + remove actions, commit
+    box, last-operation status line,
+  - settings: full in-app provider registry — list mode (click a model to
+    make it the default; add/duplicate/delete providers) and editor mode
+    (kind, endpoint, auth, extra headers, extra body JSON, and the
+    provider's model rows).
 - Theming, buttons, inputs, lists, split panes come from `gpui-component`;
   the design language is its default dark theme with dense spacing —
   sleek/modern comes free, we add restraint.
@@ -118,9 +125,9 @@ they're the last layer, not the first.
 
 ## Build
 
-Not built yet by agreement — `gpui` + `gpui-component` are git
-dependencies with substantial first-build cost, and their revisions must be
-pinned in lockstep (gpui-component tracks specific zed revisions; see
-README). First build session: pin both revs, `cargo check`, fix drift
-(GPUI's API moves fast), then `cargo test -p harness-core -p harness-git`
-— those crates have no UI dependency and their tests run headless.
+Building is verified: `blurb-app` compiles clean against the pinned
+gpui-component / zed revisions on the pinned Rust toolchain, with
+`Cargo.lock` and `rust-toolchain.toml` committed. See README for the
+dependency-pinning procedure (one shared zed source + `cargo update
+--precise`) and platform prerequisites. Fast inner loop:
+`cargo test -p harness-core -p harness-git -p blurb-app` runs headless.

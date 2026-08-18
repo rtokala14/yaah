@@ -27,14 +27,18 @@ dirs = "6"
 toml = "0.8"
 log = "0.4"
 
-# UI. gpui + gpui_platform MUST be pinned to the same zed revision that
-# gpui-component's Cargo.lock pins (rev below matches gpui-component main
-# @ v0.5.2, gpui 0.2.2). Verify against gpui-component's lockfile when
-# bumping either dep — mismatched revs do not compile together.
-gpui = { git = "https://github.com/zed-industries/zed.git", rev = "cc053a4a6fa2fd0e8793201ed9099466af1be0b1" }
-gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "cc053a4a6fa2fd0e8793201ed9099466af1be0b1", features = ["font-kit", "x11", "wayland"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component.git" }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component.git" }
+# UI. gpui-component is pinned to an exact rev. All gpui crates use the
+# same unversioned zed URL gpui-component itself uses, so the whole graph
+# shares ONE zed source (no duplicate gpui packages); the exact zed commit
+# is pinned in Cargo.lock (committed) via
+#   cargo update -p gpui --precise <rev>
+# where <rev> is what the pinned gpui-component's own Cargo.lock pins.
+# When bumping gpui-component: update its rev here, read the new zed rev
+# from its Cargo.lock, re-run the precise update, commit Cargo.lock.
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component.git", rev = "1c4e681315052fc38a881a3b5b6f9df12934ba3c" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component.git", rev = "1c4e681315052fc38a881a3b5b6f9df12934ba3c" }
 smol = "2"
 
 [profile.dev]
@@ -44,3 +48,4 @@ debug = "line-tables-only"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+

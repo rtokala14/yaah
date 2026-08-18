@@ -5,7 +5,7 @@
 
 use crate::settings::Settings;
 use crate::transcript::Transcript;
-use harness_core::config::ProviderConfig;
+use harness_core::config::RunProfile;
 use harness_core::{SessionCommand, SessionHandle};
 use harness_git::{GitRepo, RepoSnapshot, WorktreeManager};
 use std::collections::HashMap;
@@ -65,7 +65,7 @@ impl Workspace {
     /// Start a session. When worktree isolation is on, the session gets its
     /// own checkout + `blurb/<slug>` branch; otherwise it runs in the main
     /// checkout.
-    pub fn new_session(&mut self, title: &str, provider: ProviderConfig) -> Result<usize, String> {
+    pub fn new_session(&mut self, title: &str, provider: RunProfile) -> Result<usize, String> {
         let (cwd, worktree) = if self.settings.sessions_use_worktrees {
             match self.worktrees.create_session_worktree(title) {
                 Ok(wt) => (wt.path.clone(), Some(wt.name)),
@@ -77,7 +77,7 @@ impl Workspace {
 
         let id = self.next_session_id;
         self.next_session_id += 1;
-        let provider_label = format!("{} · {}", provider.name, provider.model);
+        let provider_label = provider.label();
         let handle = SessionHandle::spawn(id, title.to_string(), cwd, provider);
         self.sessions.push(SessionState {
             handle,
