@@ -83,6 +83,9 @@ pub struct SessionOptions {
     /// Global skills directory (project skills come from
     /// `<workspace>/.blurb/skills` automatically).
     pub skills_global_dir: Option<PathBuf>,
+    /// MCP servers to connect for this session (their tools join the
+    /// registry as `mcp_<server>_<tool>`, permission-gated).
+    pub mcp_servers: Vec<crate::mcp::McpServerConfig>,
 }
 
 /// Bridges the agent's blocking `ask` to the host over channels: emits a
@@ -248,6 +251,16 @@ fn session_thread(
         system.push_str("\n\n");
         system.push_str(&section);
         tools.push(Arc::new(crate::skills::SkillTool::new(skills)));
+    }
+    // MCP servers: connect, adopt their tools, keep clients alive for the
+    // session. Failures are surfaced but never fatal.
+    let (_mcp_clients, mcp_tools, mcp_errors) =
+        crate::mcp::connect_all(&options.mcp_servers, &cwd);
+    tools.extend(mcp_tools);
+    for e in mcp_errors {
+        let _ = events.send(SessionEvent::Agent(AgentEvent::Error(format!(
+            "MCP server unavailable — {e}"
+        ))));
     }
     let effort = provider_config.effort;
     let temperature = provider_config.temperature;

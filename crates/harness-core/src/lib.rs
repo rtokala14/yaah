@@ -22,6 +22,7 @@ pub mod agent;
 pub mod config;
 pub mod context;
 pub mod http;
+pub mod mcp;
 pub mod prompt;
 pub mod providers;
 pub mod session;

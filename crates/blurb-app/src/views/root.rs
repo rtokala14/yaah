@@ -36,6 +36,9 @@ pub struct RootView {
     pub commit_input: Entity<InputState>,
     /// Settings overlay: max agent-loop turns per run.
     pub max_turns_input: Entity<InputState>,
+    /// Settings overlay: new-MCP-server form.
+    pub mcp_name_input: Entity<InputState>,
+    pub mcp_command_input: Entity<InputState>,
     pub layout: Entity<ResizableState>,
     pub show_settings: bool,
     /// In-app provider editor state (Some while editing a provider).
@@ -70,6 +73,9 @@ impl RootView {
             state.set_value(max_turns.to_string(), window, cx);
             state
         });
+        let mcp_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("name"));
+        let mcp_command_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("command (e.g. npx -y some-mcp)"));
         let layout = cx.new(|_| ResizableState::default());
 
         let subscriptions = vec![
@@ -123,6 +129,8 @@ impl RootView {
             prompt_input,
             commit_input,
             max_turns_input,
+            mcp_name_input,
+            mcp_command_input,
             layout,
             show_settings: false,
             provider_editor: None,
@@ -251,6 +259,10 @@ impl RootView {
                         if !policy.allowed_bash.iter().any(|e| e == program) {
                             policy.allowed_bash.push(program.to_string());
                         }
+                    }
+                } else if tool.starts_with("mcp_") {
+                    if !policy.allowed_tools.iter().any(|e| e == &tool) {
+                        policy.allowed_tools.push(tool);
                     }
                 } else {
                     policy.allow_edits = true;
@@ -509,6 +521,30 @@ impl RootView {
         let list = &mut self.workspace.settings.permissions.allowed_bash;
         if index < list.len() {
             list.remove(index);
+            self.save_settings(cx);
+        }
+    }
+
+    /// Register an MCP server from the settings form (applies to sessions
+    /// spawned from now on).
+    pub fn add_mcp_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.mcp_name_input.read(cx).value().trim().to_string();
+        let command = self.mcp_command_input.read(cx).value().trim().to_string();
+        if name.is_empty() || command.is_empty() {
+            return;
+        }
+        let servers = &mut self.workspace.settings.mcp_servers;
+        servers.retain(|s| s.name != name);
+        servers.push(harness_core::mcp::McpServerConfig { name, command });
+        self.mcp_name_input.update(cx, |s, cx| s.set_value("", window, cx));
+        self.mcp_command_input.update(cx, |s, cx| s.set_value("", window, cx));
+        self.save_settings(cx);
+    }
+
+    pub fn remove_mcp_server(&mut self, index: usize, cx: &mut Context<Self>) {
+        let servers = &mut self.workspace.settings.mcp_servers;
+        if index < servers.len() {
+            servers.remove(index);
             self.save_settings(cx);
         }
     }

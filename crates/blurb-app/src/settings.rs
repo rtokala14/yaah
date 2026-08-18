@@ -29,6 +29,9 @@ pub struct Settings {
     /// What the agent may do without asking (edits, shell allowlist).
     #[serde(default)]
     pub permissions: PermissionPolicy,
+    /// MCP servers connected to every new session.
+    #[serde(default)]
+    pub mcp_servers: Vec<harness_core::mcp::McpServerConfig>,
 }
 
 fn default_true() -> bool {
@@ -48,6 +51,7 @@ impl Default for Settings {
             sessions_use_worktrees: true,
             max_turns_per_run: default_max_turns(),
             permissions: PermissionPolicy::default(),
+            mcp_servers: Vec::new(),
         }
     }
 }

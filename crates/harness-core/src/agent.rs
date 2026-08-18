@@ -52,6 +52,7 @@ pub struct Agent {
     /// them into settings for future sessions; these cover the current one).
     session_allow_edits: bool,
     session_allowed_bash: Vec<String>,
+    session_allowed_tools: Vec<String>,
     unverified_mutation: bool,
     verify_nudge_used: bool,
 }
@@ -76,6 +77,7 @@ impl Agent {
             announced_notes: 0,
             session_allow_edits: false,
             session_allowed_bash: Vec::new(),
+            session_allowed_tools: Vec::new(),
             unverified_mutation: false,
             verify_nudge_used: false,
         }
@@ -351,12 +353,17 @@ impl Agent {
     /// Returns Some(denial result) when the call may not run. Read-only
     /// tools never reach this (they execute in the parallel branch).
     fn permission_gate(&mut self, call: &ToolCallPart) -> Option<ToolResultPart> {
-        if !self.opts.permissions.ask || !GATED_TOOLS.contains(&call.name.as_str()) {
+        let is_mcp = call.name.starts_with("mcp_");
+        if !self.opts.permissions.ask
+            || (!GATED_TOOLS.contains(&call.name.as_str()) && !is_mcp)
+        {
             return None;
         }
         let is_edit = MUTATING_TOOLS.contains(&call.name.as_str());
         let summary = if call.name == "bash" {
             call.input.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        } else if is_mcp {
+            serde_json::to_string(&call.input).unwrap_or_default().chars().take(160).collect()
         } else {
             call.input.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
         };
@@ -370,6 +377,12 @@ impl Agent {
             {
                 return None;
             }
+        }
+        if is_mcp
+            && (self.opts.permissions.allowed_tools.contains(&call.name)
+                || self.session_allowed_tools.contains(&call.name))
+        {
+            return None;
         }
 
         let deny = |reason: &str| {
@@ -388,6 +401,8 @@ impl Agent {
             Ok(InteractionReply::Permission(PermissionDecision::AllowAlways)) => {
                 if is_edit {
                     self.session_allow_edits = true;
+                } else if is_mcp {
+                    self.session_allowed_tools.push(call.name.clone());
                 } else if let Some(program) = summary.split_whitespace().next() {
                     self.session_allowed_bash.push(program.to_string());
                 }

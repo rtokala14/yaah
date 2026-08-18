@@ -115,6 +115,7 @@ impl Workspace {
             max_turns_per_run: self.settings.max_turns_per_run,
             permissions: self.settings.permissions.clone(),
             skills_global_dir: dirs::config_dir().map(|d| d.join("blurb").join("skills")),
+            mcp_servers: self.settings.mcp_servers.clone(),
         }
     }
 

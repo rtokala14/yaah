@@ -279,6 +279,9 @@ pub struct PermissionPolicy {
     /// prefix ("git status" allows exactly that family).
     #[serde(default)]
     pub allowed_bash: Vec<String>,
+    /// Pre-approved non-bash gated tools by full name (MCP tools).
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -287,7 +290,7 @@ fn default_true() -> bool {
 
 impl Default for PermissionPolicy {
     fn default() -> Self {
-        Self { ask: true, allow_edits: false, allowed_bash: Vec::new() }
+        Self { ask: true, allow_edits: false, allowed_bash: Vec::new(), allowed_tools: Vec::new() }
     }
 }
 
@@ -431,6 +434,7 @@ mod tests {
             ask: true,
             allow_edits: false,
             allowed_bash: vec!["cargo".into(), "git status".into()],
+            allowed_tools: vec![],
         };
         assert!(policy.bash_allowed("cargo test -p harness-core"));
         assert!(policy.bash_allowed("  cargo build"));

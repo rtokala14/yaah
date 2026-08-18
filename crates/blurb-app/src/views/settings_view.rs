@@ -713,6 +713,68 @@ fn render_list(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement 
                         .into_any_element()
                 })
         })
+        // MCP servers
+        .child({
+            let servers = view.workspace.settings.mcp_servers.clone();
+            v_flex()
+                .px_4()
+                .py_3()
+                .gap_2()
+                .border_t_1()
+                .border_color(theme.border)
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.muted_foreground)
+                        .child("MCP SERVERS"),
+                )
+                .when(!servers.is_empty(), |this| {
+                    this.child(h_flex().gap_1().flex_wrap().children(
+                        servers.into_iter().enumerate().map(|(k, s)| {
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .px_1p5()
+                                .rounded(theme.radius)
+                                .bg(theme.muted)
+                                .text_xs()
+                                .child(format!("{} · {}", s.name, s.command))
+                                .child(
+                                    Button::new(("rm-mcp", k))
+                                        .icon(IconName::Close)
+                                        .ghost()
+                                        .xsmall()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.remove_mcp_server(k, cx)
+                                        })),
+                                )
+                        }),
+                    ))
+                })
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().w(px(120.)).child(Input::new(&view.mcp_name_input)))
+                        .child(div().flex_1().child(Input::new(&view.mcp_command_input)))
+                        .child(
+                            Button::new("add-mcp")
+                                .icon(IconName::Plus)
+                                .label("Add")
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.add_mcp_server(window, cx)
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child("Servers connect for new sessions; their tools appear as mcp_<server>_<tool> and require approval."),
+                )
+        })
         .child(
             h_flex()
                 .px_4()
