@@ -63,6 +63,18 @@ pub enum IndexError {
     Other(String),
 }
 
+/// Render a repo-relative path for the *model* (repo map, tool output).
+///
+/// Always uses forward slashes, including on Windows. `Path::display()` would
+/// emit `src\auth.rs` there, which leaks the host platform into the prompt:
+/// the model then echoes backslash paths back into tool calls and file
+/// references, and any prompt text or test asserting `src/auth.rs` misses.
+/// Forward slashes are understood by every OS we open files on, so
+/// normalizing here keeps agent-visible paths identical across platforms.
+pub fn display_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 /// The query surface both the agent tools and the harness primer consume.
 /// Implementations must answer from the index in low single-digit
 /// milliseconds — the whole point is being cheaper than a grep walk.

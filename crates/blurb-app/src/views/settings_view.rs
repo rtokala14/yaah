@@ -47,6 +47,11 @@ pub struct ProviderEditor {
     /// fetch failed, Some(Ok) = ids ready to click-add.
     pub fetched_models: Option<Result<Vec<String>, String>>,
     pub fetching: bool,
+    /// Result of the last connection test, keyed by model row index so each
+    /// row shows its own verdict (entitlement differs per model).
+    pub test_results: std::collections::HashMap<usize, harness_core::providers::ProbeReport>,
+    /// Model row index currently being tested, if any.
+    pub testing: Option<usize>,
 }
 
 fn text_input(
@@ -143,6 +148,8 @@ impl ProviderEditor {
             error: None,
             fetched_models: None,
             fetching: false,
+            test_results: std::collections::HashMap::new(),
+            testing: None,
         }
     }
 
@@ -166,6 +173,27 @@ impl ProviderEditor {
             extra_body: serde_json::Map::new(),
             supports_reasoning_effort: false,
         }
+    }
+
+    /// A full profile for one model row, from the *current form values*, so
+    /// the test exercises exactly what the user is looking at (including
+    /// unsaved edits) rather than what is on disk.
+    fn test_profile(&self, row: usize, cx: &App) -> harness_core::config::RunProfile {
+        let mut profile = self.probe_profile(cx);
+        profile.name = self.name.read(cx).value().trim().to_string();
+        profile.supports_reasoning_effort = self.supports_reasoning_effort;
+        profile.extra_body =
+            form::parse_json_object(&self.extra_body.read(cx).value()).unwrap_or_default();
+        if let Some(r) = self.models.get(row) {
+            profile.model = r.id.read(cx).value().trim().to_string();
+            profile.effort = r.effort;
+            if let Ok(m) = form::parse_json_object(&r.extra_body.read(cx).value()) {
+                for (k, v) in m {
+                    profile.extra_body.insert(k, v);
+                }
+            }
+        }
+        profile
     }
 
     /// Parse the form back into a ProviderConfig. Err = human-readable
@@ -337,6 +365,35 @@ impl RootView {
         .detach();
     }
 
+    /// Verify one model row end to end: same adapter, same auth, same TLS
+    /// path a real run uses (off-thread — it makes a network call).
+    pub fn editor_test_model(&mut self, row: usize, cx: &mut Context<Self>) {
+        let Some(editor) = &mut self.provider_editor else { return };
+        let profile = editor.test_profile(row, cx);
+        let index = editor.index;
+        editor.testing = Some(row);
+        editor.test_results.remove(&row);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let report = cx
+                .background_spawn(async move { harness_core::providers::test_connection(&profile) })
+                .await;
+            let _ = this.update(cx, |this: &mut Self, cx| {
+                if let Some(editor) = &mut this.provider_editor {
+                    // The editor may have moved on while we were waiting.
+                    if editor.index == index {
+                        if editor.testing == Some(row) {
+                            editor.testing = None;
+                        }
+                        editor.test_results.insert(row, report);
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Add a fetched catalog id as a model row (no duplicates).
     pub fn editor_add_fetched_model(
         &mut self,
@@ -455,6 +512,8 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
         .justify_center()
         .bg(gpui::black().opacity(0.5))
         .id("settings-backdrop")
+        // Keep clicks (and hover) from reaching the app behind the overlay.
+        .occlude()
         .on_click(cx.listener(|this, _, _, cx| this.toggle_settings(cx)))
         .child(
             v_flex()
@@ -467,8 +526,12 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
                 .bg(theme.popover)
                 .shadow_lg()
                 .overflow_hidden()
-                // Swallow clicks so the backdrop doesn't close on card clicks.
-                .on_click(cx.listener(|_, _, _, _| {}))
+                // Clicks inside the card must not close the overlay. An empty
+                // `on_click` does NOT achieve that: gpui fires every click
+                // listener whose hitbox is hovered during the bubble phase, so
+                // the backdrop's close listener would still run. `occlude`
+                // takes the card out of the backdrop's hit test entirely.
+                .occlude()
                 .child(
                     h_flex()
                         .px_4()
@@ -1071,6 +1134,8 @@ fn render_editor(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElemen
                     ),
                 })
                 .children(editor.models.iter().enumerate().map(|(j, row)| {
+                    let is_testing = editor.testing == Some(j);
+                    let result = editor.test_results.get(&j).cloned();
                     v_flex()
                         .gap_1()
                         .px_2()
@@ -1090,6 +1155,18 @@ fn render_editor(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElemen
                                         .xsmall()
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.editor_cycle_effort(j, cx)
+                                        })),
+                                )
+                                .child(
+                                    // `loading` also makes the button inert,
+                                    // so an in-flight probe can't be re-fired.
+                                    Button::new(("test-model", j))
+                                        .label(if is_testing { "Testing…" } else { "Test" })
+                                        .ghost()
+                                        .xsmall()
+                                        .loading(is_testing)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.editor_test_model(j, cx)
                                         })),
                                 )
                                 .when(model_count > 1, |this| {
@@ -1112,6 +1189,35 @@ fn render_editor(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElemen
                                 .child(div().w(px(100.)).child(Input::new(&row.context_window)))
                                 .child(div().flex_1().child(Input::new(&row.extra_body))),
                         )
+                        // Verdict from the last test of this row. Failures keep
+                        // the full detail — the actionable hint lives there.
+                        .when_some(result, |this, report| {
+                            this.child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(if report.ok {
+                                                theme.success
+                                            } else {
+                                                theme.danger
+                                            })
+                                            .child(if report.ok {
+                                                format!("✓ {}", report.headline)
+                                            } else {
+                                                format!("✕ {}", report.headline)
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(report.detail.clone()),
+                                    ),
+                            )
+                        })
                 })),
         )
         // Footer: error + actions

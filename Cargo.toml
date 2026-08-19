@@ -20,7 +20,15 @@ anyhow = "1"
 regex = "1"
 ignore = "0.4"
 globset = "0.4"
-ureq = { version = "2", features = ["json"] }
+# `native-certs` makes TLS trust the OS certificate store instead of the
+# bundled Mozilla root list. Required behind TLS-inspecting corporate proxies
+# (Zscaler/Netskope/enterprise MITM), which re-sign traffic with a private root
+# that is installed in the OS store but will never be in webpki-roots —
+# otherwise every provider request dies with "invalid peer certificate:
+# UnknownIssuer". Note this *replaces* webpki-roots rather than adding to it
+# (ureq's two `root_certs()` impls are mutually exclusive), which is fine on
+# Windows/macOS since their stores already carry the public roots.
+ureq = { version = "2", features = ["json", "native-certs"] }
 crossbeam-channel = "0.5"
 git2 = "0.20"
 dirs = "6"

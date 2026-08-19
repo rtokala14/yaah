@@ -30,6 +30,45 @@ pub enum GitError {
 pub type Result<T> = std::result::Result<T, GitError>;
 
 // ---------------------------------------------------------------------------
+// Process-wide libgit2 configuration
+
+/// Configure libgit2 once, before any repository is opened.
+///
+/// ## Why ownership validation is turned off
+///
+/// libgit2 (like git >= 2.35.2) refuses to open a repository whose workdir or
+/// gitdir is not owned by the current user: `GIT_EOWNER`, surfaced as
+/// *"repository path '...' is not owned by current user"*. On Windows this
+/// fires routinely for repositories the user genuinely owns — anything created
+/// or touched by an elevated shell ends up with `BUILTIN\Administrators` as
+/// its ACL owner, and every later non-elevated run then fails the check. The
+/// git CLI papers over it with `safe.directory` entries, but that is a
+/// hand-maintained, per-repository allowlist living outside the app — exactly
+/// the kind of out-of-band config this project refuses to require.
+///
+/// The check also buys us nothing here: blurb only opens repositories the user
+/// explicitly pointed it at (the project-root argument) plus the session
+/// worktrees it created itself underneath that root. The user's choice of path
+/// *is* the trust decision; re-deriving it from filesystem ACLs only produces
+/// false negatives on Windows.
+///
+/// libgit2 options are process-global, so this has to be a one-shot at startup
+/// rather than a scoped toggle around each `open`: sessions open repositories
+/// from several threads, and a temporary disable/re-enable pair would race.
+pub fn init() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: `git_libgit2_opts` mutates process-global state, so it must
+        // not run concurrently with other libgit2 use. `Once` provides that
+        // ordering, and every repository handle in this crate is created via
+        // `GitRepo::discover`, which calls `init()` before touching git2.
+        unsafe {
+            let _ = git2::opts::set_verify_owner_validation(false);
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Read-side snapshots (plain data for the UI)
 
 #[derive(Debug, Clone, Serialize)]
@@ -131,7 +170,11 @@ pub struct GitRepo {
 impl GitRepo {
     /// Open a repository from any path inside it — including a worktree
     /// checkout (`Repository::discover` handles both).
+    ///
+    /// This is the single entry point for obtaining a repository handle, so it
+    /// is also where [`init`] is guaranteed to have run.
     pub fn discover(path: &Path) -> Result<Self> {
+        init();
         let repo = Repository::discover(path)?;
         let root = repo
             .workdir()
@@ -650,6 +693,11 @@ mod tests {
             let mut cfg = repo.config().unwrap();
             cfg.set_str("user.name", "test").unwrap();
             cfg.set_str("user.email", "t@example.com").unwrap();
+            // Tests must not inherit machine git config. Git for Windows sets
+            // `core.autocrlf=true` in its *system* gitconfig, which rewrites
+            // LF to CRLF on checkout and breaks byte-exact content assertions.
+            cfg.set_bool("core.autocrlf", false).unwrap();
+            cfg.set_str("core.eol", "lf").unwrap();
         }
         std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
         let mut index = repo.index().unwrap();
@@ -662,6 +710,35 @@ mod tests {
             repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
         }
         repo
+    }
+
+    /// `init` is idempotent and safe to call from every `discover`.
+    ///
+    /// Context (Windows): repositories touched by an elevated shell end up
+    /// owned by `BUILTIN\Administrators`, and libgit2's default ownership
+    /// validation then rejects them with `GIT_EOWNER` for the very user who
+    /// created them \u2014 which is why `init` turns that validation off.
+    ///
+    /// This test deliberately does *not* assert the option's value: libgit2
+    /// options are process-global and Rust tests share a process, so probing
+    /// by flipping the flag would race every other test opening a repository.
+    /// The ownership path itself can't be reproduced portably either (it needs
+    /// a directory owned by another user). So we pin the part that is testable
+    /// and would actually regress: `init` is cheap, idempotent, and `discover`
+    /// keeps working when it runs repeatedly across threads.
+    #[test]
+    fn init_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    init();
+                    GitRepo::discover(tmp.path()).unwrap().head_branch().unwrap();
+                });
+            }
+        });
     }
 
     #[test]

@@ -28,8 +28,22 @@ covers architecture, `INDEX-DESIGN.md` the future code index.
 - Legacy flat settings files (provider-level `model`/`effort`/…) migrate in
   `ProviderConfig::normalize()`, called on load. Keep that path working.
 - Everything is editable in-app (settings overlay). The TOML settings file
-  (`~/.config/blurb/settings.toml`) is persistence, not an interface —
-  never build a feature that requires hand-editing it.
+  (`~/.config/blurb/settings.toml`, `%APPDATA%\blurb\` on Windows) is
+  persistence, not an interface — never build a feature that requires
+  hand-editing it.
+- **Diagnosis belongs in core.** `providers::validate_profile` (static, no
+  network) + `providers::test_connection` (real adapter, real auth) +
+  `providers::explain_error` return a `ProbeReport`; the UI only renders it.
+  Two distinctions the code must keep making, because both cost real debugging
+  time when collapsed:
+  - `base_url` is a **prefix** — the adapters append `/chat/completions` or
+    `/v1/messages`. A pasted full endpoint URL silently doubles the path.
+  - `api_key_env` holds a **variable name**, not a secret. A pasted key there
+    leaves the effective key empty, which surfaces as a 401 that looks like a
+    bad key.
+  - A **403 can mean the model, not the key** (per-model region/entitlement
+    gating). Never report those as auth failures — the key may be fine for
+    every other model on the same provider.
 
 ## Context model (long sessions are a feature)
 
@@ -140,9 +154,52 @@ runs via `cx.background_spawn`; the git panel renders immutable
   get a panel affordance.
 - Provider quirks are settings entries (headers/body extras), never code
   forks per vendor.
+- **Streaming tool calls are hostile input.** `openai.rs`'s
+  `ToolCallAccumulator` groups deltas by `index`, falling back to `id`, then to
+  a name change plus "args already parse as complete JSON". Never default a
+  missing `index` to 0 (it merges every call in the turn) and never blindly
+  append `function.name` (servers resend the full name each delta). Both bugs
+  together produced real tool names like `readreadglobread`. Any change here
+  must keep the `providers::openai::tests` cases green — they encode observed
+  server behaviour, not hypotheticals.
 - Session worktrees live in a sibling dir `.<repo>-blurb-worktrees/`,
   branches under `blurb/<slug>-<hash>`; branch is kept when a worktree is
   removed.
+- Anything the **model** reads must be platform-neutral: use
+  `harness_index::display_path`, never `Path::display()`, or Windows leaks
+  `src\auth.rs` into the prompt.
+- Tests that touch git must set `core.autocrlf=false` + `core.eol=lf`
+  locally; Git for Windows turns autocrlf on in the *system* config, so
+  content assertions are not hermetic without it.
+
+## Platform gotchas (Windows / corporate networks)
+
+- **libgit2 ownership.** `harness-git::init()` disables libgit2's owner
+  validation once per process. A repo cloned from an elevated shell is owned
+  by `BUILTIN\Administrators`, so every `Repository::discover` fails with
+  `GIT_EOWNER`. `safe.directory` was rejected deliberately: it is
+  hand-maintained out-of-band config, and it would need a fresh entry for
+  every session worktree. The option is process-global and sessions open
+  repos from several threads, so it must stay one-shot — never a
+  disable/re-enable pair.
+- **TLS.** `ureq` is built with `native-certs`, which *replaces*
+  `webpki-roots` (they are mutually exclusive cfgs). Without it a
+  TLS-inspecting proxy's root CA sits in the OS store and rustls still can't
+  see it. Do not "add" webpki-roots back alongside it.
+- **GPUI modals need `.occlude()`**, not an empty `on_click`. Click handlers
+  fire on bubble gated only on hover, so a backdrop's dismiss listener still
+  runs for clicks on the card above it. This bit both the settings and diff
+  overlays.
+- A `cargo run` exit of **101 can just be a locked output binary** — a stale
+  `blurb.exe` still running makes cargo fail to overwrite `target/debug`.
+  Check for live processes before diagnosing it as a panic.
+- **Main-thread stack.** MSVC reserves 1 MiB; GPUI recurses per element and
+  debug builds don't inline, so deep views (settings overlay with several
+  model rows) overflow it while handling plain text input. Symptom is
+  `STATUS_STACK_OVERFLOW` (0xc00000fd) with no panic and no backtrace.
+  `crates/blurb-app/build.rs` links with `/stack:33554432` (Zed does the same
+  at 8 MiB). Reserve is address space; commit stays at 4 KiB, so it is nearly
+  free. Verify with the PE optional header, not by eyeballing RSS.
 
 ## Session ritual
 

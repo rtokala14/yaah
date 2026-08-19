@@ -23,6 +23,8 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
         .justify_center()
         .bg(gpui::black().opacity(0.5))
         .id("diff-backdrop")
+        // Keep clicks (and hover) from reaching the app behind the overlay.
+        .occlude()
         .on_click(cx.listener(|this, _, _, cx| this.close_diff_view(cx)))
         .child(
             v_flex()
@@ -35,7 +37,9 @@ pub fn render(view: &RootView, cx: &mut Context<RootView>) -> impl IntoElement {
                 .bg(theme.popover)
                 .shadow_lg()
                 .overflow_hidden()
-                .on_click(cx.listener(|_, _, _, _| {}))
+                // See settings_view: an empty `on_click` does not stop the
+                // backdrop's listener from firing; `occlude` does.
+                .occlude()
                 .child(
                     h_flex()
                         .px_4()

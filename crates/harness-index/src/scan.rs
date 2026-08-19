@@ -614,7 +614,7 @@ impl CodeIndex for RegexIndex {
                 })
                 .collect();
             picks.sort_by_key(|s| (kind_priority(s.kind), s.line));
-            let mut section = format!("{}\n", path.display());
+            let mut section = format!("{}\n", crate::display_path(path));
             for s in picks.into_iter().take(8) {
                 section.push_str(&format!("  {}\n", s.signature));
             }
@@ -851,6 +851,10 @@ mod tests {
         let map = index.repo_map(2000).unwrap();
         assert!(map.contains("src/auth.rs"));
         assert!(map.contains("pub fn mint_token"));
+        // Paths reach the model, so they must be platform-neutral: on Windows
+        // `Path::display()` yields `src\auth.rs`, which leaks the host into the
+        // prompt and breaks path round-tripping through tool calls.
+        assert!(!map.contains('\\'), "repo map must use forward slashes:\n{map}");
         let small = index.repo_map(20).unwrap();
         assert!(small.len() < map.len());
     }

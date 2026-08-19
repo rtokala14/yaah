@@ -1,7 +1,8 @@
 //! App settings: provider registry (providers own multiple models) + recent
 //! projects, persisted as TOML in the platform config dir
 //! (~/.config/blurb/settings.toml on Linux, ~/Library/Application
-//! Support/blurb/ on macOS). The file is persistence, not an interface —
+//! Support/blurb/ on macOS, %APPDATA%\blurb\ on Windows). The file is
+//! persistence, not an interface —
 //! every field is editable in-app (settings overlay); legacy flat-format
 //! files (provider-level `model`/`effort`) migrate on load.
 

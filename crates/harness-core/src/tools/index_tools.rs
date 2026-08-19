@@ -9,7 +9,15 @@ use std::sync::Arc;
 fn render_symbols(symbols: &[harness_index::Symbol]) -> String {
     symbols
         .iter()
-        .map(|s| format!("{}:{}  {:?}  {}", s.file.display(), s.line, s.kind, s.signature))
+        .map(|s| {
+            format!(
+                "{}:{}  {:?}  {}",
+                harness_index::display_path(&s.file),
+                s.line,
+                s.kind,
+                s.signature
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -96,7 +104,14 @@ impl Tool for RefsTool {
             }
             Ok(refs) => ToolOutput::ok(
                 refs.iter()
-                    .map(|r| format!("{}:{}  {}", r.file.display(), r.line, r.context))
+                    .map(|r| {
+                        format!(
+                            "{}:{}  {}",
+                            harness_index::display_path(&r.file),
+                            r.line,
+                            r.context
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("\n"),
             ),

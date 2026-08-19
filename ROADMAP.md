@@ -115,6 +115,14 @@ context/cost with discipline instead of vibes.
   queries the endpoint's catalog (Anthropic + OpenAI-compatible) with the
   current form values; returned ids render as click-to-add chips.
   *(done — this iteration)*
+- [x] **Provider self-diagnosis.** `providers::validate_profile` catches the
+  config mistakes that look like outages (endpoint path left on `base_url`,
+  a secret pasted into the *env var name* field, unresolvable env var), and
+  `test_connection` proves a model end to end over the real adapter. A per-model
+  "Test" button in the provider editor reports headline + detail. Failures carry
+  the fix, not just the status code — a TLS-interception error names the
+  corporate-proxy root CA, and a per-model entitlement 403 is explicitly *not*
+  reported as bad auth. *(done — this iteration)*
 - [x] **Session titles that mean something.** Sessions auto-title from
   their first prompt with one cheap low-effort model call (sanitized,
   background, failure keeps the placeholder). *(done — this iteration)*
@@ -190,7 +198,11 @@ context/cost with discipline instead of vibes.
 
 - [ ] Packaging: macOS bundle + Linux AppImage/deb; auto-update channel.
 - [ ] Light theme parity; theme picker in settings.
-- [ ] Windows support (gpui windows backend is maturing).
+- [~] Windows support (gpui windows backend is maturing). It runs and the
+  known platform-specific breakages are fixed: libgit2 ownership validation
+  (see `harness-git::init`), TLS against corporate proxies (`native-certs`),
+  and backslash paths leaking into model-facing output
+  (`harness_index::display_path`). Not yet audited: packaging, file watching.
 - [ ] Multi-repo workspaces; per-project provider defaults.
 - [ ] Optional local telemetry dashboard (tokens/cost over time), local-only.
 
