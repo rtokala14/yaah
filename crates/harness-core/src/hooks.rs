@@ -145,6 +145,7 @@ pub fn load_project_hooks(workspace: &Path) -> Vec<HookConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn hook(event: HookEvent, tools: &str, command: &str) -> HookConfig {
         HookConfig { name: "t".into(), event, tools: tools.into(), command: command.into() }
