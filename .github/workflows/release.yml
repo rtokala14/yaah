@@ -1,0 +1,61 @@
+# Build & publish blurb for Linux x86_64.
+#
+# Triggers: pushing a v* tag creates a GitHub Release with the tarball;
+# manual runs (workflow_dispatch) upload the tarball as a run artifact.
+#
+# Linked system libs (from the app's link line): xcb, fontconfig,
+# freetype, xkbcommon(+x11), openssl, zlib. Wayland is dlopen'd at
+# runtime, so no wayland build dep is needed.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb1-dev libfontconfig1-dev libfreetype6-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libssl-dev zlib1g-dev
+
+      # rust-toolchain.toml pins the compiler; rustup on the runner
+      # honors it automatically.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Headless tests (no UI deps)
+        run: cargo test -p harness-core -p harness-git -p harness-index
+
+      - name: Build release binary
+        run: cargo build --release -p blurb-app
+
+      - name: Package
+        run: |
+          strip target/release/blurb
+          mkdir -p dist
+          tar -C target/release -czf dist/blurb-linux-x86_64.tar.gz blurb
+          sha256sum dist/blurb-linux-x86_64.tar.gz > dist/blurb-linux-x86_64.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blurb-linux-x86_64
+          path: dist/*
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
